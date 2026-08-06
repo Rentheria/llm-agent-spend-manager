@@ -1,0 +1,60 @@
+[Unit]
+Description=Agent Fleet Console — carril interactivo (llm-agent-spend-manager, cuenta sin topar)
+Documentation=https://github.com/Rentheria/llm-agent-spend-manager
+After=network-online.target
+
+[Service]
+# POR QUE EXISTE ESTE SEGUNDO PROXY (incidente "API error · Retrying in 45s"):
+#
+# Cuando la flota agota el tope combinado, el proxy con --cap responde 429 a todo.
+# Pero Claude Code trata el 429 como rate limit transitorio y reintenta en silencio
+# ("API error · Retrying in 45s · attempt 1/10") sin mostrar nunca el cuerpo de la
+# respuesta. Resultado: la sesion interactiva queda MUERTA frente al usuario, con
+# status.anthropic.com en verde, y se pierde el tiempo buscando la falla del lado
+# del proveedor cuando el corte es de casa.
+#
+# La leccion NO es "quitar el tope" (borrar ANTHROPIC_BASE_URL deja a la flota sin
+# guardarrail Y sin contar la sesion interactiva: lo peor de los dos mundos). La
+# leccion es que el tope debe cortar TRABAJO DESATENDIDO, nunca la sesion
+# interactiva donde alguien esta esperando.
+#
+# Por eso hay dos carriles contra el MISMO contador:
+#   4610  --cap <N>        -> workers desatendidos. SI topan.
+#   4611  --cap 0          -> sesion interactiva. Cuenta, NUNCA topa.
+#
+# --cap 0 no es "sin control": enforce.Allow() incrementa el contador y solo despues
+# decide, asi que el consumo interactivo SIGUE sumando a la ventana combinada y
+# sigue siendo lo que empuja a los workers contra su tope. Lo unico que cambia es quien
+# recibe el 429. Ver internal/enforce/enforce.go (Allow: "limit <= 0 -> cuenta y
+# permite") y docs/enforcement-cableado.md.
+#
+# --unit tokens igual que 4610: aqui nunca topa, pero cuenta —
+# y lo que cuenta es lo que ven `quota` y los dashboards. Con unidades distintas
+# los dos carriles no podrian compartir cubeta (la llave lleva la unidad adelante,
+# ver scopeKeyByUnit) y el numero combinado seria bytes sumados con tokens.
+#
+# Comparten cap.db a proposito: SQLiteCounter esta hecho para coordinar entre
+# procesos (WAL + busy_timeout(5000) + _txlock=immediate, internal/sqliteutil).
+# --key fleet igual que 4610 para que ambos carriles caigan en la MISMA cubeta.
+ExecStart=%h/.local/bin/llm-agent-spend-manager proxy --port 4611 --cap 0 --window 5h --unit tokens --key fleet
+
+# Mismo razonamiento que 4610: si la sesion interactiva apunta aqui, este proceso
+# caido = sesion sin LLM (connection refused). El fail-open del contador no cubre
+# que falte el proxy.
+Restart=always
+RestartSec=2
+
+Environment=XDG_STATE_HOME=%S
+
+# Higiene de recursos (maquina compartida con la flota).
+MemoryMax=256M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/llm-agent-spend-manager
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=Agent Fleet Console — dashboard (llm-agent-spend-manager)
+Documentation=https://github.com/Rentheria/llm-agent-spend-manager
+After=network-online.target
+
+[Service]
+# Sin --lan A PROPOSITO: loopback (127.0.0.1:4600) es el default y asi se queda.
+# --lan expondria el gasto de toda la flota a la red local; se prende a mano
+# cuando se quiera ver desde el telefono, no de forma permanente.
+#
+# --cache-ttl 60s (default 10s): un escaneo completo cuesta ~6 s de CPU y ~79 MB.
+# Nadie mira el dashboard cada 10 s, y navegando entre vistas el TTL corto
+# dispararia rescans encimados. Los datos son archivos de log: no cambian tan
+# rapido como para justificarlo. Idle NO escanea: el scan es por request.
+ExecStart=%h/.local/bin/llm-agent-spend-manager serve --port 4600 --cache-ttl 60s
+Restart=always
+RestartSec=2
+
+# 79 MB medidos de pico en un escaneo de todo el historial -> 256M es ~3x de
+# margen y sigue siendo un techo real: esta maquina la comparten varios agentes
+# y ya ha habido OOM kills por no ponerlos.
+MemoryMax=256M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Solo lectura: el dashboard LEE los logs de los agentes, nunca escribe nada.
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

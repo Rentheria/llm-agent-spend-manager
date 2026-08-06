@@ -1,0 +1,17 @@
+/bin/
+*.exe
+*.test
+*.out
+.DS_Store
+
+# Release build output
+/dist/
+
+# Tauri desktop wrapper — Rust/CLI build artifacts
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
+/desktop/node_modules/
+
+# Notas locales de desarrollo — no se publican
+docs/tickets.md
+/briefs/

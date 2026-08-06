@@ -1,0 +1,1275 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>llm-agent-spend-manager</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel2: #1f2430; --line: #2a2f3a;
+      --ink: #e8eaf0; --soft: #9aa3b2; --accent: #6ea8fe; --warn: #f2c14e;
+      --claudecode: #6ea8fe; --openclaw: #b98cff; --cursor: #5ecb9e; --antigravity: #f2a56e;
+      --activity: #7d8696;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      -webkit-text-size-adjust: 100%;
+    }
+    header { padding: 20px 16px 8px; max-width: 900px; margin: 0 auto; }
+    h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+    h1 small { color: var(--soft); font-weight: 400; font-size: 13px; }
+    main { max-width: 900px; margin: 0 auto; padding: 8px 16px 48px; }
+    .disclaimer {
+      background: #241f10; border: 1px solid #4a3d15; color: #f0dfa8;
+      border-radius: 10px; padding: 10px 12px; margin: 12px 0; font-size: 13px;
+    }
+    .disclaimer b { color: var(--warn); }
+    .controls { display: flex; gap: 8px; margin: 16px 0 8px; flex-wrap: wrap; }
+    .controls button {
+      background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+      border-radius: 999px; padding: 7px 16px; font-size: 14px; cursor: pointer;
+    }
+    .controls button[aria-pressed="true"] { background: var(--accent); color: #0a0d12; border-color: var(--accent); font-weight: 600; }
+    .cards { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 12px 0 20px; }
+    @media (min-width: 620px) { .cards { grid-template-columns: repeat(3, 1fr); } }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+    .card .who { font-size: 13px; color: var(--soft); display: flex; align-items: center; gap: 7px; }
+    .card .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .card .cost { font-size: 26px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+    .card .meta { font-size: 12px; color: var(--soft); font-variant-numeric: tabular-nums; }
+    .card.grand { background: linear-gradient(180deg, var(--panel2), var(--panel)); }
+    /* Activity-tier cards read as a lower confidence: dashed edge, dimmer, a
+       badge, and a ≈range instead of a single figure (T12). */
+    .card.activity { border-style: dashed; border-color: var(--activity); background: #14161c; }
+    .card.activity .cost { color: var(--soft); font-size: 21px; }
+    .badge {
+      display: inline-block; font-size: 10px; letter-spacing: .3px; text-transform: uppercase;
+      color: #0a0d12; background: var(--activity); border-radius: 5px; padding: 1px 6px; margin-left: 6px;
+      vertical-align: middle; font-weight: 700;
+    }
+    .badge.measured { background: var(--accent); }
+    .tiers {
+      display: flex; gap: 16px; flex-wrap: wrap; margin: 4px 0 0; padding: 10px 12px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      font-size: 12px; color: var(--soft);
+    }
+    .tiers .t { display: flex; align-items: baseline; gap: 6px; }
+    .unpriced { color: var(--warn); }
+    h2 { font-size: 15px; color: var(--soft); font-weight: 600; margin: 24px 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 14px; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--soft); font-weight: 600; position: sticky; top: 0; background: var(--bg); }
+    tbody tr:hover { background: var(--panel); }
+    .agent-tag { display: inline-flex; align-items: center; gap: 6px; }
+    .muted { color: var(--soft); }
+    .err { color: #ff8a8a; padding: 12px; }
+    footer { max-width: 900px; margin: 0 auto; padding: 0 16px 32px; color: var(--soft); font-size: 12px; }
+    a { color: var(--accent); }
+    /* Automejora (/api/advice) */
+    h3.sub { font-size: 13px; color: var(--soft); font-weight: 600; margin: 20px 0 6px; text-transform: uppercase; letter-spacing: .4px; }
+    .trend { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; font-size: 13px; color: var(--soft); }
+    .trend-verdict { font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .3px; }
+    .trend-verdict.improving { color: var(--cursor); }
+    .trend-verdict.worsening { color: #ff8a8a; }
+    .trend-verdict.flat, .trend-verdict.insufficient-data { color: var(--soft); }
+    .finding { background: var(--panel); border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; padding: 11px 13px; margin: 10px 0; }
+    .finding.high { border-left-color: #ff8a8a; }
+    .finding.medium { border-left-color: var(--warn); }
+    .finding.low { border-left-color: var(--activity); }
+    .finding-head { font-size: 14px; font-weight: 600; }
+    .badge.impact-high { background: #ff8a8a; }
+    .badge.impact-medium { background: var(--warn); }
+    .badge.impact-low { background: var(--activity); }
+    .finding p { margin: 7px 0 0; font-size: 13px; color: var(--soft); }
+    .finding-rec { color: var(--ink) !important; }
+    .finding-savings { color: var(--warn) !important; font-variant-numeric: tabular-nums; }
+    /* An escalation is not a louder finding: it's a different kind of thing, so
+       it doesn't borrow the impact colors it would otherwise keep climbing. */
+    .finding.gap { border-left-color: var(--accent); }
+    .badge.gap { background: var(--accent); }
+    .finding-mechanism { color: var(--ink) !important; }
+    /* Quota is the primary metric (T80/T81): cycles and "who is eating it" lead. */
+    .quota { margin: 8px 0 20px; }
+    .cycle {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px 16px; margin: 10px 0;
+    }
+    .cycle.exhausts { border-color: #ff8a8a; border-left: 3px solid #ff8a8a; }
+    .cycle-head { font-size: 15px; font-weight: 700; margin: 0 0 8px; }
+    .cycle-fill {
+      font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums;
+      margin: 4px 0 2px; letter-spacing: -.5px;
+    }
+    .cycle-fill.unknown { font-size: 16px; font-weight: 600; color: var(--warn); }
+    .cycle-fill.warn { color: #ff8a8a; }
+    .cycle-meta { font-size: 13px; color: var(--soft); font-variant-numeric: tabular-nums; }
+    .cycle-forecast { margin-top: 8px; font-size: 14px; }
+    .cycle-forecast.exhausts { color: #ff8a8a; font-weight: 600; }
+    .heavy-row td:first-child { font-weight: 700; color: var(--warn); }
+    /* Ventana de contexto (T22). La ocupación es una cifra MEDIDA (tokens que el
+       proveedor contó), así que va sólida como las demás cifras medidas; lo que
+       no tiene techo derivable imprime su motivo y nunca un 0 ni un —% que se
+       lea como "va vacía". */
+    .ctx-fill { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ctx-fill.warn { color: var(--warn); }
+    .ctx-fill.over { color: #ff8a8a; }
+    .ctx-state { font-size: 12px; }
+    .ctx-state.warn { color: var(--warn); }
+    .ctx-state.over { color: #ff8a8a; font-weight: 700; }
+    .finding.shift { border-left-color: var(--warn); }
+    .shift-jump { color: var(--ink) !important; font-variant-numeric: tabular-nums; font-weight: 700; }
+    .note-box {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px 12px; margin: 8px 0; font-size: 13px; color: var(--soft);
+    }
+    .outcome-verdict { font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .3px; }
+    .outcome-verdict.shift-down { color: var(--cursor); }
+    .outcome-verdict.shift-up { color: #ff8a8a; }
+    .outcome-verdict.no-shift, .outcome-verdict.insufficient-sample { color: var(--soft); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>llm-agent-spend-manager <small>— cuota primero · $ equivalente secundario</small></h1>
+  </header>
+  <main>
+    <section class="quota" aria-labelledby="quota-heading">
+      <h2 id="quota-heading">Cuota — cuánto queda y quién se la come</h2>
+      <div id="quota">Cargando cuota…</div>
+    </section>
+
+    <div id="disclaimer" class="disclaimer">Cargando…</div>
+
+    <div class="tiers" aria-label="Jerarquía de confianza">
+      <span class="t"><span class="badge measured">medido</span> tokens reales × precio de lista = <b>costo equivalente estimado</b></span>
+      <span class="t"><span class="badge">≈ estimado</span> sólo actividad (Cursor / Antigravity): <b>rango, no punto</b> · confianza menor</span>
+    </div>
+
+    <div class="controls" id="windows" role="group" aria-label="Ventana de tiempo">
+      <button data-window="today" aria-pressed="true">Hoy</button>
+      <button data-window="week" aria-pressed="false">Esta semana</button>
+      <button data-window="all" aria-pressed="false">Todo</button>
+    </div>
+
+    <div class="cards" id="cards"></div>
+
+    <h2>Costo equivalente estimado por agente y día</h2>
+    <div id="daily"></div>
+
+    <h2>Automejora — ¿dónde se va el costo y estamos mejorando?</h2>
+    <div id="advice"></div>
+
+    <h2>Resultado — ¿se movió la métrica tras un cambio real?</h2>
+    <div id="outcome">Cargando…</div>
+  </main>
+  <footer>
+    Datos crudos: <a href="/api/quota">/api/quota</a> ·
+    <a href="/api/summary?window=today">/api/summary</a> ·
+    <a href="/api/daily">/api/daily</a> ·
+    <a href="/api/advice">/api/advice</a> ·
+    <a href="/api/outcome">/api/outcome</a>. Actualiza al recargar.
+  </footer>
+
+  <script>
+    // Everything here builds the DOM node-by-node (createElement + textContent)
+    // instead of assigning HTML strings to innerHTML. Today all interpolated
+    // fields are server constants (agent names, formatted dates, numbers), so no
+    // value is attacker-controlled — but doing it this way keeps a future
+    // free-text field (a raw model name from data, a note) from silently
+    // becoming stored DOM-XSS. Rule: dynamic text goes through textContent; never
+    // innerHTML (L-04).
+    const fmtUSD = (n) => "$" + (n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // Per-turn figures are often fractions of a cent, so they need more decimals
+    // than the headline totals.
+    const fmtUSD4 = (n) => "$" + (n || 0).toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    const fmtInt = (n) => (n || 0).toLocaleString("en-US");
+    const agentColor = (name) => {
+      if (!name) return "var(--openclaw)";
+      if (name.startsWith("Claude Code")) return "var(--claudecode)";
+      if (name.startsWith("OpenClaw")) return "var(--openclaw)";
+      if (name.startsWith("Cursor")) return "var(--cursor)";
+      if (name.startsWith("Antigravity")) return "var(--antigravity)";
+      return "var(--openclaw)";
+    };
+
+    // el builds an element with an optional class and text. text is always set
+    // via textContent, so it is never parsed as HTML.
+    function el(tag, className, text) {
+      const n = document.createElement(tag);
+      if (className) n.className = className;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+    // dotEl is the colored agent dot. The color comes from agentColor's fixed
+    // set of CSS vars and is applied via style, never interpolated into markup.
+    function dotEl(name) {
+      const s = el("span", "dot");
+      s.style.background = agentColor(name);
+      return s;
+    }
+
+    // A totals bucket is activity-tier if any of its turns are estimates.
+    const isActivity = (t) => t && t.activityTurns > 0;
+
+    // costCell / tokensCell render a single figure for measured buckets and a
+    // ≈range for activity ones — "rango, no punto" (T12). An activity bucket with
+    // no priced model shows "—" instead of a misleading $0.00.
+    function costCell(t) {
+      if (!isActivity(t)) return fmtUSD(t.costUsd);
+      if (!t.costLowUsd && !t.costHighUsd) return "—";
+      return `≈${fmtUSD(t.costLowUsd)}–${fmtUSD(t.costHighUsd)}`;
+    }
+    function tokensCell(t) {
+      if (!isActivity(t)) return fmtInt(t.totalTokens);
+      return `≈${fmtInt(t.tokensLow)}–${fmtInt(t.tokensHigh)}`;
+    }
+
+    let currentWindow = "today";
+    // Guards against out-of-order responses: the initial (today) load and a
+    // quick window switch race, and without this the slower response can win and
+    // show data for the wrong window. Only the latest request may render.
+    let summarySeq = 0;
+
+    // unpricedNoteEl returns a " · +N sin precio" fragment, or null when there's
+    // nothing to note.
+    function unpricedNoteEl(t) {
+      if (!t || !t.unpricedTurns) return null;
+      const frag = document.createDocumentFragment();
+      frag.appendChild(document.createTextNode(" "));
+      const span = el("span", "unpriced", `· +${fmtInt(t.unpricedTurns)} sin precio`);
+      span.title = "turnos con un modelo sin precio en la tabla — el costo está subestimado";
+      frag.appendChild(span);
+      return frag;
+    }
+
+    function errEl(message) {
+      return el("div", "err", message);
+    }
+
+    async function loadSummary() {
+      const cards = document.getElementById("cards");
+      const disc = document.getElementById("disclaimer");
+      const seq = ++summarySeq;
+      const wanted = currentWindow;
+      try {
+        const res = await fetch(`/api/summary?window=${wanted}`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (seq !== summarySeq) return; // a newer request superseded this one
+        disc.replaceChildren(el("b", "", data.costLabel), document.createTextNode(" — " + data.disclaimer));
+
+        const nodes = data.byAgent.map((a) => agentCard(a.agent, a.totals));
+        nodes.push(agentCard("Total flota", data.grand, "grand"));
+        cards.replaceChildren(...nodes);
+      } catch (e) {
+        if (seq !== summarySeq) return;
+        cards.replaceChildren(errEl("No se pudo cargar el resumen: " + e.message));
+      }
+    }
+
+    // agentCard renders one summary card as a DOM node. Activity-tier agents get
+    // the dashed style, a "≈ estimado" badge, and a ≈range; the fleet card is
+    // flagged when it mixes measured and estimated numbers.
+    function agentCard(name, t, extra) {
+      const activity = isActivity(t);
+      const card = el("div", "card" + (extra ? " " + extra : "") + (activity ? " activity" : ""));
+
+      const who = el("div", "who");
+      if (extra !== "grand") who.appendChild(dotEl(name));
+      who.appendChild(document.createTextNode(name));
+      if (activity) {
+        who.appendChild(document.createTextNode(" "));
+        who.appendChild(el("span", "badge", "≈ estimado"));
+      }
+      card.appendChild(who);
+
+      card.appendChild(el("div", "cost", costCell(t)));
+
+      const meta = el("div", "meta", `${tokensCell(t)} tokens · ${fmtInt(t.turns)} turnos`);
+      const note = unpricedNoteEl(t);
+      if (note) meta.appendChild(note);
+      card.appendChild(meta);
+      return card;
+    }
+
+    async function loadDaily() {
+      const box = document.getElementById("daily");
+      try {
+        const res = await fetch("/api/daily");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (!data.byAgentDay || data.byAgentDay.length === 0) {
+          box.replaceChildren(el("p", "muted", "Sin actividad registrada todavía."));
+          return;
+        }
+        box.replaceChildren(dailyTable(data.byAgentDay));
+      } catch (e) {
+        box.replaceChildren(errEl("No se pudo cargar el detalle diario: " + e.message));
+      }
+    }
+
+    // dailyTable builds the per-agent, per-day table as DOM.
+    function dailyTable(byAgentDay) {
+      const table = el("table");
+      const thead = el("thead");
+      const htr = el("tr");
+      for (const h of ["Día", "Agente", "Costo equiv. / ≈est.", "Tokens", "Turnos"]) {
+        htr.appendChild(el("th", "", h));
+      }
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      const tbody = el("tbody");
+      for (const r of byAgentDay) {
+        const t = r.totals;
+        const tr = el("tr");
+        tr.appendChild(el("td", "", r.day));
+
+        const agentTd = el("td");
+        const tag = el("span", "agent-tag");
+        tag.appendChild(dotEl(r.agent));
+        tag.appendChild(document.createTextNode(r.agent));
+        if (isActivity(t)) {
+          tag.appendChild(document.createTextNode(" "));
+          const b = el("span", "badge", "≈");
+          b.title = "actividad estimada, rango";
+          tag.appendChild(b);
+        }
+        agentTd.appendChild(tag);
+        tr.appendChild(agentTd);
+
+        const costTd = el("td", "", costCell(t));
+        if (t.unpricedTurns) {
+          costTd.appendChild(document.createTextNode(" "));
+          const star = el("span", "unpriced", "*");
+          star.title = "modelo sin precio";
+          costTd.appendChild(star);
+        }
+        tr.appendChild(costTd);
+
+        tr.appendChild(el("td", "muted", tokensCell(t)));
+        tr.appendChild(el("td", "muted", fmtInt(t.turns)));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      return table;
+    }
+
+    document.getElementById("windows").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-window]");
+      if (!btn) return;
+      currentWindow = btn.dataset.window;
+      for (const b of document.querySelectorAll("#windows button")) {
+        b.setAttribute("aria-pressed", String(b === btn));
+      }
+      loadSummary();
+    });
+
+    // ---- Automejora (/api/advice) -------------------------------------------
+    // Same DOM-only rule as everything above: findings carry free text written by
+    // the analyzer, so they go through textContent, never innerHTML (L-04).
+
+    const trendWording = {
+      improving: ["mejorando", "cada turno cuesta menos"],
+      worsening: ["empeorando", "cada turno cuesta más"],
+      flat: ["estable", "dentro del ruido normal"],
+      "insufficient-data": ["sin datos suficientes", "hacen falta más días activos con costo medible"],
+    };
+
+    async function loadAdvice() {
+      const box = document.getElementById("advice");
+      try {
+        const res = await fetch("/api/advice");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (!data.fleet || !data.fleet.turns) {
+          box.replaceChildren(el("p", "muted", "Sin actividad que analizar todavía."));
+          return;
+        }
+        box.replaceChildren(
+          trendEl(data.trend),
+          bucketTable(data.fleet.buckets || []),
+          topTasksTable(data.topTasks || []),
+          contextRiskTable(data.contextRisks || []),
+          workloadsBlock(data.workloads || {}),
+          findingList(data.findings || []),
+          escalationList(data.escalations || []));
+      } catch (e) {
+        box.replaceChildren(errEl("No se pudo cargar la automejora: " + e.message));
+      }
+    }
+
+    // trendEl renders the self-improvement verdict: cost per turn now vs before.
+    function trendEl(trend) {
+      const [label, why] = trendWording[trend.direction] || [trend.direction, ""];
+      const box = el("div", "trend");
+      box.appendChild(el("span", "trend-verdict " + trend.direction, label));
+      if (trend.direction === "insufficient-data") {
+        box.appendChild(document.createTextNode(" — " + why));
+        return box;
+      }
+      const delta = (trend.deltaPct > 0 ? "+" : "") + trend.deltaPct.toFixed(1) + "%";
+      box.appendChild(document.createTextNode(
+        ` ${delta} — costo por turno ${fmtUSD4(trend.priorCostPerTurnUsd)} → ${fmtUSD4(trend.recentCostPerTurnUsd)}` +
+        ` (${trend.windowDays} días activos vs los ${trend.windowDays} previos).` +
+        ` ${why.charAt(0).toUpperCase()}${why.slice(1)}.`));
+      return box;
+    }
+
+    // bucketTable shows which billable bucket carries the cost — the table that
+    // says which lever to pull, since a token's price depends on its bucket.
+    function bucketTable(buckets) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "Costo equivalente por bucket facturable"));
+      if (buckets.length === 0) {
+        wrap.appendChild(el("p", "muted", "Sin buckets medidos en esta ventana."));
+        return wrap;
+      }
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Bucket", "Costo equiv.", "%", "Tokens"]) htr.appendChild(el("th", "", h));
+      const thead = el("thead");
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      const tbody = el("tbody");
+      for (const b of buckets) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "", b.bucket));
+        tr.appendChild(el("td", "", fmtUSD(b.costUsd)));
+        tr.appendChild(el("td", "muted", (b.share * 100).toFixed(1) + "%"));
+        tr.appendChild(el("td", "muted", fmtInt(b.tokens)));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    // contextRiskTable names the conversations that dragged a growing context past
+    // the turn where restarting would have been cheaper. It answers the question
+    // the bucket table raises — cache-read carries the cost, fine, but WHERE do I
+    // cut? — with a measured turn number per session instead of "shorter sessions".
+    // Silent when nothing crossed the line.
+    function contextRiskTable(risks) {
+      const wrap = el("div");
+      if (risks.length === 0) return wrap;
+      wrap.appendChild(el("h3", "sub", "Contexto: sesiones pasadas de su punto de no-retorno"));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Ahorro si se corta", "Cortar en", "Se pasó por", "Curva de contexto", "Qué se pidió"]) {
+        htr.appendChild(el("th", "", h));
+      }
+      const thead = el("thead");
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      const tbody = el("tbody");
+      for (const r of risks) {
+        const c = r.curve;
+        const tr = el("tr");
+        tr.appendChild(el("td", "", fmtUSD(c.savingsUsd)));
+        tr.appendChild(el("td", "", "turno " + fmtInt(c.noReturnTurn)));
+        tr.appendChild(el("td", "muted", fmtInt(c.turnsPastNoReturn) + " turnos"));
+        tr.appendChild(el("td", "muted", `${fmtInt(c.baselineContext)} +${fmtInt(Math.round(c.growthPerTurn))}/turno` +
+          ` → pico ${fmtInt(c.peakContext)} (${c.resets} reinicios)`));
+        tr.appendChild(el("td", "", r.label));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      wrap.appendChild(el("p", "muted", "El punto de no-retorno es el turno en que lo acumulado por arrastrar el " +
+        "contexto supera lo que cuesta re-armarlo desde cero. Es un tope en tokens: no mide lo que cueste " +
+        "volver a leer lo que la sesión ya sabía."));
+      return wrap;
+    }
+
+    // findingList renders each finding with the evidence it was derived from, so
+    // a reader can check the claim instead of trusting it.
+    function findingList(findings) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "Hallazgos y tips"));
+      if (findings.length === 0) {
+        wrap.appendChild(el("p", "muted", "Nada que reportar: ningún patrón de desperdicio medible con estos datos."));
+        return wrap;
+      }
+      for (const f of findings) {
+        const card = el("div", "finding " + f.impact);
+        const head = el("div", "finding-head");
+        head.appendChild(el("span", "badge impact-" + f.impact, f.impact));
+        head.appendChild(document.createTextNode(" " + f.id + " — " + f.title));
+        card.appendChild(head);
+        card.appendChild(el("p", "finding-evidence", f.evidence));
+        card.appendChild(el("p", "finding-rec", f.recommendation));
+        if (f.savingsUsd > 0) {
+          card.appendChild(el("p", "finding-savings", "Ahorro tope: " + fmtUSD(f.savingsUsd) + " de costo equivalente"));
+        }
+        wrap.appendChild(card);
+      }
+      return wrap;
+    }
+
+    // escalationList renders the advice the report decided NOT to repeat. It
+    // renders nothing at all when there's nothing to escalate — the section only
+    // appears when a tip has provably stopped working.
+    function escalationList(escalations) {
+      const wrap = el("div");
+      if (escalations.length === 0) return wrap;
+      wrap.appendChild(el("h3", "sub", "Brecha de arquitectura — esto ya no se arregla con un tip"));
+      for (const e of escalations) {
+        const card = el("div", "finding gap");
+        const head = el("div", "finding-head");
+        head.appendChild(el("span", "badge gap", "mecanismo"));
+        head.appendChild(document.createTextNode(" " + e.findingId + " — " + e.findingTitle));
+        card.appendChild(head);
+        card.appendChild(el("p", "", `${e.windows} ventanas de ${e.windowDays} días activos ·` +
+          ` ${e.metricName} ${e.metricDeltaPct > 0 ? "+" : ""}${e.metricDeltaPct.toFixed(1)}%`));
+        card.appendChild(el("p", "", e.evidence));
+        card.appendChild(el("p", "finding-mechanism", e.mechanism));
+        wrap.appendChild(card);
+      }
+      return wrap;
+    }
+
+    // topTasksTable is already in /api/advice; the CLI printed it and the
+    // dashboard was silently dropping it (T80).
+    function topTasksTable(tasks) {
+      const wrap = el("div");
+      if (!tasks.length) return wrap;
+      wrap.appendChild(el("h3", "sub", "Tareas más caras (una sesión = una tarea)"));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Costo equiv.", "%", "Turnos", "Por qué (bucket)", "Qué se pidió"]) {
+        htr.appendChild(el("th", "", h));
+      }
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const t of tasks) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "", fmtUSD(t.costUsd)));
+        tr.appendChild(el("td", "muted", (t.share * 100).toFixed(1) + "%"));
+        tr.appendChild(el("td", "muted", fmtInt(t.turns)));
+        const why = t.topBucket
+          ? `${t.topBucket} ${(t.topBucketShare * 100).toFixed(0)}% · ${fmtInt(t.tokensPerTurn)} tok/turno`
+          : "sin buckets medidos";
+        tr.appendChild(el("td", "muted", why));
+        const label = el("td", "");
+        label.appendChild(dotEl(t.agent));
+        label.appendChild(document.createTextNode(" " + (t.label || "(sin etiqueta)")));
+        tr.appendChild(label);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    const classLabel = {
+      "conversacion-larga": "Conversación larga",
+      "rafaga-mecanica": "Ráfaga mecánica",
+      "contexto-grande": "Trabajo de contexto grande",
+      "disparo-unico": "Disparo único",
+      "sin-clasificar": "Sin clasificar",
+    };
+    const leverShort = {
+      "conversacion-larga": "tope de contexto / corte por tarea",
+      "rafaga-mecanica": "rutear a modelo o agente barato",
+      "contexto-grande": "no releer: punteros, no archivos",
+      "disparo-unico": "no pedir caché",
+    };
+
+    // workloadsBlock paints Capa 2+3 already present in /api/advice JSON.
+    function workloadsBlock(report) {
+      const wrap = el("div");
+      if (!report.streams) return wrap;
+      wrap.appendChild(el("h3", "sub", "Forma de la carga (qué palanca aplica)"));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Forma", "Cargas", "Turnos", "Costo equiv.", "%", "Palanca"]) {
+        htr.appendChild(el("th", "", h));
+      }
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const c of report.classes || []) {
+        tbody.appendChild(workloadRow(
+          classLabel[c.class] || c.class, c.streams, c.turns, c.costUsd, c.costShare,
+          leverShort[c.class] || "—"));
+      }
+      const u = report.unclassified || {};
+      tbody.appendChild(workloadRow(
+        classLabel["sin-clasificar"], u.streams, u.turns, u.costUsd, u.costShare,
+        "— falta el dato, no se fuerza a la forma más cercana"));
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      wrap.appendChild(el("p", "muted",
+        `${fmtInt(report.classified)} de ${fmtInt(report.streams)} cargas clasificadas. ` +
+        `Una carga = un hilo de contexto.`));
+      for (const r of u.reasons || []) {
+        wrap.appendChild(el("p", "muted", `· ${fmtInt(r.streams)} sin clasificar: ${r.reason}`));
+      }
+
+      wrap.appendChild(el("h3", "sub", "Plan de ahorro por ruta (contrafactual medido)"));
+      let printed = 0;
+      for (const c of report.classes || []) {
+        if (!c.streams) continue;
+        printed++;
+        wrap.appendChild(classPlanEl(c));
+      }
+      if (!printed) {
+        wrap.appendChild(el("p", "muted", "Ninguna carga cayó en una forma conocida: no hay plan que derivar."));
+      } else if (report.caveat) {
+        wrap.appendChild(el("p", "muted", report.caveat));
+      }
+      return wrap;
+    }
+
+    function workloadRow(name, streams, turns, cost, share, lever) {
+      const tr = el("tr");
+      tr.appendChild(el("td", "", name));
+      tr.appendChild(el("td", "muted", fmtInt(streams)));
+      tr.appendChild(el("td", "muted", fmtInt(turns)));
+      tr.appendChild(el("td", "", fmtUSD(cost)));
+      tr.appendChild(el("td", "muted", ((share || 0) * 100).toFixed(1) + "%"));
+      tr.appendChild(el("td", "muted", lever));
+      return tr;
+    }
+
+    function classPlanEl(c) {
+      const box = el("div", "note-box");
+      box.appendChild(el("div", "finding-head",
+        `${classLabel[c.class] || c.class} — ${fmtUSD(c.costUsd)} en ${fmtInt(c.streams)} cargas` +
+        ` (${(c.costShare * 100).toFixed(1)}% del costo equivalente)`));
+      box.appendChild(el("p", "", "Palanca: " + c.lever));
+      if (c.routes && c.routes.length) {
+        const table = el("table");
+        const htr = el("tr");
+        for (const h of ["Ruta", "Costo equiv.", "Costo/turno", "Turnos", "Cargas"]) {
+          htr.appendChild(el("th", "", h));
+        }
+        table.appendChild(el("thead")).appendChild(htr);
+        const tbody = el("tbody");
+        for (const r of c.routes) {
+          const tr = el("tr");
+          const routeName = r.measured ? r.route : `≈ ${r.route} (estimado)`;
+          tr.appendChild(el("td", "", routeName));
+          tr.appendChild(el("td", "", fmtUSD(r.costUsd)));
+          tr.appendChild(el("td", "muted", fmtUSD4(r.costPerTurnUsd)));
+          tr.appendChild(el("td", "muted", fmtInt(r.turns)));
+          tr.appendChild(el("td", "muted", fmtInt(r.streams)));
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        box.appendChild(table);
+      }
+      for (const m of c.missing || []) {
+        box.appendChild(el("p", "muted", `Falta el dato · ${m.route}: ${m.reason}`));
+      }
+      box.appendChild(counterfactualEl(c.byRoute));
+      box.appendChild(counterfactualEl(c.byModel));
+      return box;
+    }
+
+    function counterfactualEl(cf) {
+      if (!cf) return el("p", "muted", "");
+      if (!cf.known) {
+        return el("p", "muted", `Contrafactual por ${cf.dimension}: ${cf.reason}`);
+      }
+      const p = el("p", "",
+        `Contrafactual por ${cf.dimension}: la opción más barata medida es ${cf.cheapest}` +
+        ` a ${fmtUSD4(cf.cheapestCostPerTurnUsd)}/turno; mover ${fmtInt(cf.movableTurns)} turnos` +
+        ` habría evitado ${fmtUSD(cf.savingsUsd)}.`);
+      if (cf.movableTurns < cf.turnsElsewhere) {
+        p.appendChild(document.createTextNode(
+          ` Topado por la observación: ${fmtInt(cf.turnsElsewhere)} fueron por otra opción,` +
+          ` pero solo se reclama lo que la barata ya demostró cargar (${fmtInt(cf.cheapestTurns)}).`));
+      }
+      return p;
+    }
+
+    // ---- Cuota (/api/quota) — first thing on the page (T80) -----------------
+
+    async function loadQuota() {
+      const box = document.getElementById("quota");
+      try {
+        const res = await fetch("/api/quota");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const nodes = [];
+        nodes.push(el("h3", "sub", "Cuánto queda"));
+        if (!data.cycles || data.cycles.length === 0) {
+          nodes.push(el("p", "muted", "Ningún ciclo de cuota en curso: sin actividad reciente en los planes medidos."));
+        } else {
+          for (const status of data.cycles) nodes.push(cycleEl(status));
+        }
+        if (data.calibration && data.calibration.note) {
+          nodes.push(el("p", "muted", "Calibración: " + data.calibration.note));
+        }
+        if (data.calibration && data.calibration.modelWeights && data.calibration.modelWeights.length) {
+          nodes.push(modelWeightsEl(data.calibration.modelWeights));
+        }
+        if (data.unmetered && Object.keys(data.unmetered).length) {
+          nodes.push(unmeteredEl(data.unmetered));
+        }
+        nodes.push(el("h3", "sub", "Cuánto contexto queda"));
+        nodes.push(contextWindowsEl(data.contextWindows || {}));
+        nodes.push(el("h3", "sub", "Quién se la come"));
+        nodes.push(breakdownEl(data.breakdown || {}));
+        if (data.levers && data.levers.length) {
+          nodes.push(el("h3", "sub", "Qué palanca la estira más"));
+          for (const l of data.levers) nodes.push(leverEl(l));
+        }
+        box.replaceChildren(...nodes);
+      } catch (e) {
+        box.replaceChildren(errEl("No se pudo cargar la cuota: " + e.message));
+      }
+    }
+
+    function cycleEl(status) {
+      const c = status.cycle;
+      const exhausts = status.forecast && status.forecast.known && status.forecast.exhausts;
+      const card = el("div", "cycle" + (exhausts ? " exhausts" : ""));
+      card.appendChild(el("div", "cycle-head", `${c.provider} · ${c.name} (${c.plan})`));
+
+      const fill = fillLine(status, c);
+      const fillEl = el("div", "cycle-fill" + (fill.unknown ? " unknown" : "") + (fill.warn ? " warn" : ""), fill.text);
+      card.appendChild(fillEl);
+
+      const used = measureAmount(c.used, c.unit);
+      let meta = `Consumido: ${used} en ${fmtInt(c.turns)} turnos`;
+      if (c.unmeasured) meta += ` (+${fmtInt(c.unmeasured)} sin consumo legible: el real es mayor)`;
+      meta += ` · ${fmtClock(c.start)} → ${fmtClock(c.reset)}`;
+      card.appendChild(el("div", "cycle-meta", meta));
+      card.appendChild(el("div", "cycle-meta", "Ritmo: " + burnLine(status.burn, c.unit)));
+      const forecast = forecastLine(status.forecast);
+      card.appendChild(el("div", "cycle-forecast" + (exhausts ? " exhausts" : ""), "Pronóstico: " + forecast));
+      return card;
+    }
+
+    // fillLine mirrors the CLI's honesty: no percentage when the ceiling isn't
+    // known, and never a hopeful 0% that would measure the meter instead of the plan.
+    function fillLine(status, c) {
+      if (c.turns > 0 && c.unmeasured === c.turns) {
+        return {
+          unknown: true,
+          text: `sin % calculable: ninguno de los ${fmtInt(c.turns)} turnos trae consumo legible`,
+        };
+      }
+      if (!status.fillKnown) {
+        const reason = c.name && c.name.toLowerCase().includes("semanal")
+          ? "Anthropic no publica el tope semanal y aquí nunca se ha tocado"
+          : "todavía no hay agotamientos suficientes para calibrar el techo";
+        return { unknown: true, text: "sin % calculable: " + reason };
+      }
+      const f = status.fill;
+      let text;
+      if (f.exact) text = Math.round(f.point * 100) + "% del techo";
+      else text = `${Math.round(f.point * 100)}% del techo (rango ${Math.round(f.low * 100)}–${Math.round(f.high * 100)}%)`;
+      if (c.capacity && c.capacity.dispersion > 0) {
+        text += ` · calibrado, dispersión ±${Math.round(c.capacity.dispersion * 100)}%`;
+      } else if (c.capacity && c.capacity.source) {
+        text += ` · ${c.capacity.source}`;
+      }
+      return { warn: f.high >= 0.7 || f.point >= 0.7, text };
+    }
+
+    function measureAmount(m, unit) {
+      if (!m) return "—";
+      if (m.exact) return unitAmount(m.point, unit);
+      return "≈" + unitAmount(m.low, unit) + "–" + unitAmount(m.high, unit);
+    }
+
+    function unitAmount(v, unit) {
+      if (unit === "usd") return fmtUSD(v);
+      return fmtMillions(v) + " tokens";
+    }
+
+    function fmtMillions(v) {
+      if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+      if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
+      return fmtInt(Math.round(v || 0));
+    }
+
+    function burnLine(burn, unit) {
+      if (!burn || burn.perHour <= 0) {
+        return `sin actividad en los últimos ${fmtDuration(burn && burn.over)}`;
+      }
+      return `${unitAmount(burn.perHour, unit)}/h, medido sobre ${fmtInt(burn.turns)} turnos` +
+        ` en los últimos ${fmtDuration(burn.over)}`;
+    }
+
+    function forecastLine(f) {
+      if (!f || !f.known) {
+        return `no calculable sin techo o sin ritmo; el ciclo refila en ${fmtDuration(f && f.timeLeft)}`;
+      }
+      if (!f.exhausts) {
+        return `al ritmo actual el ciclo aguanta hasta el refill, en ${fmtDuration(f.timeLeft)}`;
+      }
+      return `⚠ se agota en ${fmtDuration(f.timeLeft)}, antes del refill`;
+    }
+
+    // Go's time.Duration JSON-encodes as nanoseconds.
+    function fmtDuration(ns) {
+      if (!ns || ns <= 0) return "0 min";
+      const mins = Math.floor(ns / 1e9 / 60);
+      if (mins < 60) return mins + " min";
+      const h = Math.floor(mins / 60);
+      if (h < 24) return `${h} h ${mins % 60} min`;
+      return `${Math.floor(h / 24)} d ${h % 24} h`;
+    }
+
+    function fmtClock(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mi = String(d.getMinutes()).padStart(2, "0");
+      return `${dd}/${mm} ${hh}:${mi}`;
+    }
+
+    // workspaceName mirrors quota.WorkspaceName: last two path segments so
+    // ".openclaw/workspace" is readable and unambiguous.
+    function workspaceName(path) {
+      if (!path) return "(sin directorio)";
+      const parts = path.replace(/^\/+|\/+$/g, "").split("/");
+      if (parts.length <= 2) return path;
+      return parts.slice(-2).join("/");
+    }
+
+    function modelWeightsEl(weights) {
+      const wrap = el("div", "note-box");
+      wrap.appendChild(el("div", "finding-head",
+        "Peso por modelo contra la cuota (Anthropic no lo publica; solo se deriva de lo observado)"));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Modelo", "Peso", "Detalle"]) htr.appendChild(el("th", "", h));
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const w of weights) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "", w.model));
+        // Honesty rule: never invent ×1.00 — show "no derivable" with the reason.
+        if (w.derivable) {
+          tr.appendChild(el("td", "", "×" + w.weight.toFixed(2)));
+          tr.appendChild(el("td", "muted", w.observations + " ventanas dominadas"));
+        } else {
+          tr.appendChild(el("td", "", "no derivable"));
+          tr.appendChild(el("td", "muted", w.reason || ""));
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    function unmeteredEl(unmetered) {
+      const wrap = el("div", "note-box");
+      wrap.appendChild(el("div", "finding-head", "Sin cuota medible"));
+      for (const [agent, reason] of Object.entries(unmetered)) {
+        wrap.appendChild(el("p", "muted", `· ${agent}: ${reason}`));
+      }
+      return wrap;
+    }
+
+    // ---- Ventana de contexto (T22) ------------------------------------------
+    // El otro techo que se acaba: la cuota se agota para toda la cuenta, el
+    // contexto se agota para UNA conversación, y los dos paran el trabajo a
+    // media tarea. Se lee junto a la cuota por eso, no en otra pantalla.
+
+    function contextWindowsEl(cw) {
+      const wrap = el("div");
+      const streams = cw.streams || [];
+      const noWindow = cw.noWindow || [];
+      if (!streams.length && !noWindow.length) {
+        wrap.appendChild(el("p", "muted",
+          "Sin sesiones medidas en el periodo: nada que ocupe una ventana de contexto."));
+      } else {
+        wrap.appendChild(el("p", "muted",
+          "Ocupación medida: el contexto que cargó el último turno (entrada + caché, contado por el" +
+          " proveedor) contra la ventana del modelo activo · aviso a partir de " +
+          windowPct(cw.warnAt) + " de la ventana."));
+      }
+      if (streams.length) wrap.appendChild(fullestStreamsEl(streams));
+      if ((cw.shifts || []).length || cw.sameCeilingShifts) {
+        wrap.appendChild(contextShiftsEl(cw.shifts || [], cw.sameCeilingShifts || 0));
+      }
+      if (noWindow.length) wrap.appendChild(unwindowedModelsEl(noWindow));
+      if (cw.blind && Object.keys(cw.blind).length) wrap.appendChild(contextBlindEl(cw.blind));
+      return wrap;
+    }
+
+    function fullestStreamsEl(streams) {
+      const wrap = el("div", "note-box");
+      const head = el("div", "finding-head", "Sesiones más llenas");
+      head.appendChild(el("span", "badge measured", "medido"));
+      wrap.appendChild(head);
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Sesión", "Ocupado", "Contexto / ventana", "Modelo activo", "Turnos", "Estado"]) {
+        htr.appendChild(el("th", "", h));
+      }
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const s of streams) {
+        const live = s.stream.live || {};
+        const state = contextStateNote(s.stream.status);
+        const tr = el("tr");
+        tr.appendChild(el("td", "", contextRowName(s.stream, s.workspace, s.label)));
+        tr.appendChild(el("td", "ctx-fill " + state.cls, windowPct(live.share)));
+        // Cifra exacta y no millones: 1,048,576 y 1,000,000 se redondean los dos
+        // a "1.0M", y entonces dos ocupaciones distintas del mismo contexto se
+        // leen como error de cálculo en vez de como el techo que sí se movió.
+        tr.appendChild(el("td", "", `${fmtInt(live.tokens)} / ${fmtInt(live.limit)}`));
+        tr.appendChild(el("td", "", live.model || "—"));
+        tr.appendChild(el("td", "", fmtInt(s.stream.turns)));
+        tr.appendChild(el("td", "ctx-state " + state.cls, state.text));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    // El techo pasado no es un pronóstico: arriba del 100% el runtime ya está
+    // compactando o negándose.
+    function contextStateNote(status) {
+      if (status === "ceiling") return { cls: "over", text: "⚠ pasó el techo: ya está compactando o negándose" };
+      if (status === "warning") return { cls: "warn", text: "⚠ cerca del techo" };
+      return { cls: "", text: "" };
+    }
+
+    // contextShiftsEl is the section T22 exists for: the same conversation, the
+    // same tokens, two ceilings, two percentages.
+    function contextShiftsEl(shifts, sameCeiling) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "Cambios de modelo a media sesión (mismo contexto, otro techo)"));
+      for (const s of shifts) {
+        const shift = s.shift;
+        const card = el("div", "finding shift");
+        card.appendChild(el("div", "finding-head",
+          `${contextRowName({ sessionId: s.sessionId, threadId: s.threadId }, s.workspace, s.label)} · ${fmtClock(shift.at)}`));
+        card.appendChild(el("p", "", `${shift.before.model} → ${shift.after.model}`));
+        card.appendChild(el("p", "shift-jump",
+          `${fmtInt(shift.carriedTokens)} tokens de contexto, sin escribir un solo token más: ${rescoreText(shift)}`));
+        wrap.appendChild(card);
+      }
+      if (sameCeiling > 0) {
+        wrap.appendChild(el("p", "muted",
+          `+${fmtInt(sameCeiling)} cambios de modelo entre ventanas del mismo tamaño: el techo no se movió,` +
+          " la ocupación no cambió."));
+      }
+      return wrap;
+    }
+
+    // Un cambio con una ventana no derivable de un lado sigue siendo real —el
+    // techo sí se movió—, así que se reporta con el motivo donde iría el %.
+    function rescoreText(shift) {
+      if (shift.before.known && shift.after.known) {
+        return `${windowPct(shift.before.share)} → ${windowPct(shift.after.share)} de la ventana` +
+          ` (${fmtInt(shift.before.limit)} → ${fmtInt(shift.after.limit)} tokens de techo)`;
+      }
+      if (!shift.before.known) {
+        return `el salto no es medible — ventana de ${shift.before.model} no derivable: ${shift.before.reason}`;
+      }
+      return `${windowPct(shift.before.share)} de la ventana de ${shift.before.model}` +
+        ` → el salto no es medible: ${shift.after.reason}`;
+    }
+
+    function unwindowedModelsEl(models) {
+      const wrap = el("div", "note-box");
+      wrap.appendChild(el("div", "finding-head",
+        "Hilos activos sin % calculable (la ventana del modelo no es derivable de las fuentes locales)"));
+      for (const m of models) {
+        wrap.appendChild(el("p", "muted",
+          `· ${m.model} · ${fmtInt(m.streams)} hilos · no derivable: ${m.reason}`));
+      }
+      return wrap;
+    }
+
+    function contextBlindEl(blind) {
+      const wrap = el("div", "note-box");
+      wrap.appendChild(el("div", "finding-head", "Sin contexto medible"));
+      for (const agent of Object.keys(blind).sort()) {
+        wrap.appendChild(el("p", "muted", `· ${agent}: ${blind[agent]}`));
+      }
+      return wrap;
+    }
+
+    // contextRowName mirrors the CLI's: workspace when there is one, the thread
+    // when a spawned subagent carries its own context, and what was asked, which
+    // is what makes a row recognizable instead of merely unique.
+    function contextRowName(stream, workspace, label) {
+      let name = workspace ? workspaceName(workspace) : (stream.sessionId || "").slice(0, 8);
+      if (stream.threadId) name += " · hilo " + stream.threadId.slice(0, 8);
+      if (label) name += " — " + (label.length > 40 ? label.slice(0, 39) + "…" : label);
+      return name;
+    }
+
+    // windowPct no recorta en 100%: una sesión pasada de su techo se lee "298%",
+    // que es exactamente el número que hizo visible el problema del ticket.
+    function windowPct(share) {
+      if (typeof share !== "number") return "—";
+      return Math.round(share * 100) + "%";
+    }
+
+    function breakdownEl(b) {
+      const wrap = el("div");
+      const total = (b.total && b.total.totalTokens) || 0;
+      if (!b.total || !b.total.turns) {
+        wrap.appendChild(el("p", "muted", "Sin actividad en el periodo."));
+        return wrap;
+      }
+      wrap.appendChild(el("p", "muted",
+        `Total del periodo: ${fmtMillions(total)} tokens en ${fmtInt(b.total.turns)} turnos` +
+        ` · ${fmtUSD(b.total.costUsd)} costo equivalente estimado`));
+
+      // Workspace first: it separates chat from code work, and the acceptance
+      // criterion is that .openclaw/workspace screams without scrolling.
+      wrap.appendChild(shareTable("Por espacio de trabajo", total, (b.byWorkspace || []).map((w) => ({
+        name: workspaceName(w.workspace),
+        note: w.agent,
+        totals: w.totals,
+        heavy: /openclaw\/workspace/i.test(w.workspace || ""),
+      }))));
+      wrap.appendChild(shareTable("Por modelo", total, (b.byModel || []).map((m) => ({
+        name: m.model || "(sin modelo reportado)",
+        totals: m.totals,
+      }))));
+      wrap.appendChild(shareTable("Por agente", total, (b.byAgent || []).map((a) => ({
+        name: a.agent,
+        totals: a.totals,
+      }))));
+      wrap.appendChild(shareTable("Sesiones más pesadas", total, (b.topSessions || []).map((s) => ({
+        name: s.workspace ? workspaceName(s.workspace) : (s.sessionId || "").slice(0, 12),
+        note: s.label || s.agent,
+        totals: s.totals,
+        heavy: /openclaw\/workspace/i.test(s.workspace || ""),
+      }))));
+      return wrap;
+    }
+
+    function shareTable(title, totalTokens, rows) {
+      const wrap = el("div");
+      if (!rows.length) return wrap;
+      wrap.appendChild(el("h3", "sub", title));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["", "Tokens", "%", "Turnos", "Tok/turno"]) htr.appendChild(el("th", "", h));
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const r of rows) {
+        const t = r.totals || {};
+        const tr = el("tr", r.heavy ? "heavy-row" : "");
+        const nameTd = el("td", "");
+        nameTd.appendChild(document.createTextNode(r.name));
+        if (r.note) nameTd.appendChild(el("span", "muted", " · " + r.note));
+        tr.appendChild(nameTd);
+        tr.appendChild(el("td", "", fmtMillions(t.totalTokens)));
+        const pct = totalTokens ? (t.totalTokens / totalTokens * 100) : 0;
+        tr.appendChild(el("td", r.heavy ? "" : "muted", pct.toFixed(1) + "%"));
+        tr.appendChild(el("td", "muted", fmtInt(t.turns)));
+        const per = t.turns ? Math.round(t.totalTokens / t.turns) : 0;
+        tr.appendChild(el("td", "muted", fmtInt(per)));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    function leverEl(l) {
+      const card = el("div", "finding medium");
+      card.appendChild(el("div", "finding-head", `[${l.id}] ${l.title}`));
+      card.appendChild(el("p", "", "Evidencia: " + l.evidence));
+      if (l.tokensSaved > 0) {
+        let effect = `Efecto: ${fmtMillions(l.tokensSaved)} tokens de cuota liberados`;
+        if (l.windowExtension > 0) effect += ` ≈ ${fmtDuration(l.windowExtension)} más de ventana`;
+        card.appendChild(el("p", "finding-savings", effect));
+      }
+      card.appendChild(el("p", "finding-rec", "Acción: " + l.action));
+      return card;
+    }
+
+    // ---- Outcome (/api/outcome) --------------------------------------------
+
+    const verdictLabel = {
+      "shift-down": "BAJÓ DE NIVEL",
+      "shift-up": "SUBIÓ DE NIVEL",
+      "no-shift": "sin cambio de nivel",
+      "insufficient-sample": "muestra insuficiente",
+    };
+
+    async function loadOutcome() {
+      const box = document.getElementById("outcome");
+      try {
+        const res = await fetch("/api/outcome");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const nodes = [];
+        nodes.push(changesSummaryEl(data.changes || {}));
+        nodes.push(levelShiftsEl((data.outcomes && data.outcomes.outcomes) || []));
+        nodes.push(adviceLoopEl(data.outcomes || {}));
+        box.replaceChildren(...nodes);
+      } catch (e) {
+        box.replaceChildren(errEl("No se pudo cargar el resultado: " + e.message));
+      }
+    }
+
+    function changesSummaryEl(changes) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "Cambios marcados (contra esto se contrasta la métrica)"));
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Fuente", "Cantidad", "Detalle"]) htr.appendChild(el("th", "", h));
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      const rows = [
+        ["Commits", changes.commits, `en ${fmtInt((changes.repos || []).length)} repos`],
+        ["Entradas de log", changes.logEntries,
+          `de las cuales ${fmtInt((changes.logEntries || 0) - (changes.logNotAChange || 0))} marcan un cambio real`],
+        ["Líneas ilegibles", changes.logUnreadable, "no se cuentan (JSON inválido en el log)"],
+        ["Total de eventos", (changes.changes || []).length, ""],
+      ];
+      for (const [name, n, detail] of rows) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "", name));
+        tr.appendChild(el("td", "", fmtInt(n)));
+        tr.appendChild(el("td", "muted", detail));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    function levelShiftsEl(outcomes) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "¿Cambió de nivel?"));
+      if (!outcomes.length) {
+        wrap.appendChild(el("p", "muted", "Sin series diarias que medir en esta ventana."));
+        return wrap;
+      }
+      const table = el("table");
+      const htr = el("tr");
+      for (const h of ["Métrica", "Días", "Veredicto", "Δ"]) htr.appendChild(el("th", "", h));
+      table.appendChild(el("thead")).appendChild(htr);
+      const tbody = el("tbody");
+      for (const o of outcomes) {
+        const s = o.shift || {};
+        const tr = el("tr");
+        tr.appendChild(el("td", "", o.series));
+        tr.appendChild(el("td", "muted", fmtInt((s.series || []).length)));
+        const verd = el("td");
+        verd.appendChild(el("span", "outcome-verdict " + (s.verdict || ""),
+          verdictLabel[s.verdict] || s.verdict || "—"));
+        tr.appendChild(verd);
+        let delta = "—";
+        if (s.verdict && s.verdict !== "insufficient-sample") {
+          delta = o.series === "cost-per-turn"
+            ? ((s.deltaPct > 0 ? "+" : "") + (s.deltaPct || 0).toFixed(1) + "%")
+            : ((s.delta > 0 ? "+" : "") + ((s.delta || 0) * 100).toFixed(1) + " pp");
+        }
+        tr.appendChild(el("td", "muted", delta));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      wrap.appendChild(el("p", "muted",
+        "Se reporta UN cambio de nivel por métrica: el más grande de la serie. " +
+        "Coincidencia en tiempo no es causalidad."));
+
+      for (const o of outcomes) {
+        const s = o.shift || {};
+        if (s.verdict !== "shift-down" && s.verdict !== "shift-up") continue;
+        wrap.appendChild(shiftDetailEl(o));
+      }
+      return wrap;
+    }
+
+    function shiftDetailEl(o) {
+      const s = o.shift || {};
+      const a = o.attribution || {};
+      const card = el("div", "finding " + (s.verdict === "shift-down" ? "low" : "high"));
+      card.appendChild(el("div", "finding-head",
+        `[${o.series}] ${verdictLabel[s.verdict]} el ${s.changeDay || "—"}`));
+      if (o.findingId) {
+        card.appendChild(el("p", "", `${o.findingId}${o.escalated ? " (escalado)" : ""} — ${o.findingText || ""}`));
+      }
+      const candidates = a.candidates || [];
+      if (!candidates.length) {
+        card.appendChild(el("p", "muted",
+          "Ningún cambio marcado en la ventana: lo que lo movió no está en esta bitácora."));
+      } else {
+        card.appendChild(el("p", "",
+          `Ventana ${fmtDay(a.from)} … ${fmtDay(a.through)}: ${fmtInt(candidates.length)} cambios marcados`));
+        for (const c of candidates.slice(0, 8)) {
+          card.appendChild(el("p", "muted",
+            `${fmtDay(c.at)} ${c.source} ${c.ref} · ${c.repo || c.actor} · ${c.note || ""}`));
+        }
+        if (candidates.length > 8) {
+          card.appendChild(el("p", "muted", `… y ${candidates.length - 8} más (ver /api/outcome)`));
+        }
+      }
+      if (a.inseparableNote) card.appendChild(el("p", "muted", a.inseparableNote));
+      if (a.caveat) card.appendChild(el("p", "muted", a.caveat));
+      return card;
+    }
+
+    function fmtDay(iso) {
+      if (!iso) return "—";
+      return new Date(iso).toISOString().slice(0, 10);
+    }
+
+    function adviceLoopEl(ledger) {
+      const wrap = el("div");
+      wrap.appendChild(el("h3", "sub", "Ciclo consejo → cambio real → ¿se movió la métrica?"));
+      let graded = 0;
+      for (const o of ledger.outcomes || []) {
+        if (!o.findingId) continue;
+        graded++;
+        const s = o.shift || {};
+        const card = el("div", "note-box");
+        card.appendChild(el("div", "finding-head",
+          `[${o.findingId}]${o.escalated ? " (escalado)" : ""} ${o.findingText || ""}`));
+        card.appendChild(el("p", "",
+          `Serie: ${o.series} · Resultado: ${verdictLabel[s.verdict] || s.verdict || "—"}` +
+          (s.changeDay && (s.verdict === "shift-down" || s.verdict === "shift-up")
+            ? " el " + s.changeDay : "")));
+        wrap.appendChild(card);
+      }
+      if (!graded) {
+        wrap.appendChild(el("p", "muted", "Ningún consejo del reporte tiene serie diaria que medir."));
+      }
+      for (const u of ledger.unmeasured || []) {
+        wrap.appendChild(el("p", "muted",
+          `Sin serie diaria: ${u.findingId}${u.escalated ? " (escalado)" : ""} · métrica ${u.metricName}` +
+          (u.reason ? " — " + u.reason : "")));
+      }
+      return wrap;
+    }
+
+    loadQuota();
+    loadSummary();
+    loadDaily();
+    loadAdvice();
+    loadOutcome();
+
+    // Register the service worker so the dashboard is installable (PWA, T18).
+    // Progressive enhancement: the dashboard works fine without it.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

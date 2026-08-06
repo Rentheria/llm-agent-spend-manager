@@ -1,0 +1,59 @@
+name: Release
+
+# Publishes cross-compiled binaries to a GitHub release when a v* tag is pushed.
+# The project is pure Go (no cgo), so CGO_ENABLED=0 cross-compiles cleanly to
+# every target from a single Linux runner.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          check-latest: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          bin=llm-agent-spend-manager
+          [ "$GOOS" = windows ] && bin=llm-agent-spend-manager.exe
+          out="llm-agent-spend-manager_${GOOS}_${GOARCH}"
+          mkdir -p "dist/$out"
+          go build -trimpath -ldflags "-s -w" -o "dist/$out/$bin" ./cmd/llm-agent-spend-manager
+          cp README.md LICENSE "dist/$out/" 2>/dev/null || true
+          cd dist
+          if [ "$GOOS" = windows ]; then
+            zip -r "${out}.zip" "$out"
+          else
+            tar czf "${out}.tar.gz" "$out"
+          fi
+
+      - name: Upload artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          fail_on_unmatched_files: true

@@ -1,0 +1,70 @@
+[Unit]
+Description=Agent Fleet Console — proxy de tope combinado (llm-agent-spend-manager)
+Documentation=https://github.com/Rentheria/llm-agent-spend-manager
+After=network-online.target
+
+[Service]
+# POR QUE HAY UN TOPE: el periodo de "solo cuenta" sirve para confirmar que TODO
+# el trafico de la flota pasa por aqui. Una vez confirmado, contar sin topar no
+# evita que la cuota se agote a media tarea con varios agentes en paralelo. El
+# tope si.
+#
+# --unit tokens: el tope cuenta los tokens REALES que Anthropic reporta en cada
+# respuesta (`usage`), no un estimado. Contar BYTES del request y traducir con una
+# razon bytes/token medida en sondas aisladas (2.2-3.14) no funciona: en uso real
+# esa razon llega a ~17.5, y el proxy topa con cientos de MB contados mientras la
+# ventana real de 5h va al 10%. La causa: cada turno
+# reenvia el historial completo (los bytes crecen con el contexto) pero el prompt
+# caching abarata esos mismos tokens repetidos — bytes y tokens divergen justo
+# donde vive la flota, y ninguna constante los reconcilia. Ahora no hay traduccion.
+#
+# --cap: ponlo por DEBAJO del techo calibrado de tu ventana (`quota` lo reporta
+# con su intervalo). El valor de ejemplo aqui es ~75% del extremo bajo observado.
+# El margen no es timidez, cubre lo que el contador NO puede ver: trafico que
+# gasta cuota sin pasar por el proxy (basta que alguien quite ANTHROPIC_BASE_URL),
+# la estimacion de la cubeta anterior en la ventana deslizante, y que la ventana
+# rodante local no arranca donde arranca la sesion de 5h de Anthropic.
+#
+# --window 5h y no el default de 24h: el techo que revienta es el de la ventana
+# rodante de 5h de Claude Max. Un tope de 24h no puede frenar una rafaga de 3
+# horas. OJO al cambiar este valor: el indice de bucket se calcula sobre la
+# duracion de la ventana, asi que cambiarla DESCARTA el conteo acumulado y la
+# ventana arranca limpia.
+#
+# --key fleet: una sola clave compartida es lo que vuelve el tope COMBINADO entre
+# agentes. --key agent no compra nada hoy (ni Claude Code ni OpenClaw mandan el
+# header X-Agent, asi que todo caeria igual en fleet:default) y solo dejaria puesto
+# el pie para que un cliente que si lo mande parta el tope en dos sin avisar.
+# La atribucion por agente ya la dan los adapters, que leen tokens reales.
+#
+# La llave real lleva la unidad adelante ("tokens:fleet:default", ver
+# scopeKeyByUnit): cambiar --unit arranca ventana limpia en vez de heredar un
+# numero que medía otra cosa. Sin eso, un cambio a tokens encontraria cientos de
+# millones de BYTES acumulados y los leeria como tokens: 429 a toda la flota al
+# primer request.
+ExecStart=%h/.local/bin/llm-agent-spend-manager proxy --port 4610 --cap 120000000 --window 5h --unit tokens --key fleet
+
+# Restart=always no es opcional aqui: si los agentes apuntan su ANTHROPIC_BASE_URL
+# a este proceso, el proceso caido = flota entera sin LLM (connection refused, no
+# fail-open — el fail-open solo cubre que falle el CONTADOR, no que falte el proxy).
+Restart=always
+RestartSec=2
+
+# El contador vive en un archivo propio y sobrevive a estos reinicios.
+Environment=XDG_STATE_HOME=%S
+
+# Higiene de recursos (maquina compartida con la flota): esto es un ReverseProxy,
+# no deberia acercarse ni de lejos a estos techos.
+MemoryMax=256M
+CPUQuota=50%
+
+# Solo escucha loopback (el binario lo fuerza, no admite host en --port), y no
+# necesita escribir nada fuera de su propio estado.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/llm-agent-spend-manager
+
+[Install]
+WantedBy=default.target

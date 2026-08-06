@@ -1,0 +1,1 @@
+{"type":"message","id":"t1","parentId":"t0","timestamp":"2026-01-15T18:00:00.000Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input":9999,"output":9999,"cacheRead":0,"cacheWrite":0,"totalTokens":19998}}}

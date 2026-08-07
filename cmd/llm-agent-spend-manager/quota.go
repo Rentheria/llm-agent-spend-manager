@@ -551,10 +551,9 @@ func perTurn(t aggregate.Totals) int {
 	return t.TotalTokens / t.Turns
 }
 
-// fleetAgents is the display order for --fleet (T20 §3.2): the two agents that
-// share the Anthropic account cycle first, so the shared number is obviously
-// shared, then Cursor, then the unmetered agent. Itzamná is left out — it has
-// no remote-orchestration path to route to (T20 design doc §5, decision 7).
+// fleetAgents is the display order for --fleet: the two agents that share the
+// Anthropic account cycle first, so the shared number is obviously shared, then
+// Cursor, then the unmetered agent.
 var fleetAgents = []string{
 	aggregate.AgentClaudeCode,
 	aggregate.AgentOpenClaw,

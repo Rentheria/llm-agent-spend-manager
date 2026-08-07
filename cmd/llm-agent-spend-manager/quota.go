@@ -690,17 +690,4 @@ func fleetMeasureNote(report quota.Report, agent string) string {
 // but a billing month does not, and "01" alone next to "15:04" is ambiguous.
 func clock(t time.Time) string { return t.Format("02/01 15:04") }
 
-// duration renders a span the way someone waiting on it would say it. Anything
-// already elapsed reads as zero rather than as a negative number of minutes.
-func duration(d time.Duration) string {
-	if d <= 0 {
-		return "0 min"
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%d min", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		return fmt.Sprintf("%d h %d min", int(d.Hours()), int(d.Minutes())%60)
-	}
-	return fmt.Sprintf("%d d %d h", int(d.Hours())/24, int(d.Hours())%24)
-}
+func duration(d time.Duration) string { return humanize.Duration(d) }

@@ -89,6 +89,15 @@ func ContextBytesAmount(r *http.Request) int64 {
 	return r.ContentLength
 }
 
+// ResetNote returns one sentence about when the upstream provider's own quota
+// window refills, to append to a rejection. Empty means "nothing to add".
+//
+// It is a port, not an implementation: the proxy caps on a counter and knows
+// nothing about any provider's window (internal/sessionreset does). It runs
+// inside the request being rejected, so it MUST NOT block — the answer has to
+// already be known by the time it is asked.
+type ResetNote func() string
+
 // Proxy forwards to a fixed upstream base URL and enforces a combined cap.
 type Proxy struct {
 	limiter    *enforce.Limiter
@@ -97,6 +106,7 @@ type Proxy struct {
 	amount     AmountFunc
 	countUsage bool
 	target     *url.URL
+	resetNote  ResetNote
 }
 
 // Option customizes a Proxy.
@@ -123,6 +133,15 @@ func WithAmountFunc(fn AmountFunc) Option { return func(p *Proxy) { p.amount = f
 //   - The X-Cap-* headers report the counter as it stood BEFORE this call's
 //     tokens were added, since they are written when the response starts.
 func WithUsageCounting() Option { return func(p *Proxy) { p.countUsage = true } }
+
+// WithResetNote adds the provider's real reset to the body of every rejection.
+//
+// Without it a 429 states the counter and nothing else, which says nothing about
+// when the work can resume — and the counter's own window is anchored to the
+// epoch, so it cannot answer that even in principle (T139). What the caller
+// needs is the phase of the provider's window, which is reconstructed elsewhere
+// and handed in here already computed.
+func WithResetNote(fn ResetNote) Option { return func(p *Proxy) { p.resetNote = fn } }
 
 // WithErrorLog sends the proxy's error and diagnostic lines to a specific
 // logger instead of the standard one (whose stderr is what
@@ -219,11 +238,27 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setCapHeaders(w.Header(), d)
 	if !d.Allowed {
 		w.Header().Set("Retry-After", "60")
-		http.Error(w, fmt.Sprintf("combined budget cap reached (%d/%d)", d.Current, d.Limit),
-			http.StatusTooManyRequests)
+		http.Error(w, p.capReachedMessage(d), http.StatusTooManyRequests)
 		return
 	}
 	p.forward(w, r, diag)
+}
+
+// capReachedMessage states which cap rejected the call and, when a note is
+// wired, when the provider's own quota actually frees up. Both halves matter:
+// the counter says the fleet is over ITS budget, which is a different fact from
+// the plan being exhausted, and the operator reading this needs to tell them
+// apart to decide whether to wait or to raise the cap.
+func (p *Proxy) capReachedMessage(d enforce.Decision) string {
+	msg := fmt.Sprintf("combined budget cap reached (%d/%d)", d.Current, d.Limit)
+	if p.resetNote == nil {
+		return msg
+	}
+	note := p.resetNote()
+	if note == "" {
+		return msg
+	}
+	return msg + " — " + note
 }
 
 func setCapHeaders(h http.Header, d enforce.Decision) {

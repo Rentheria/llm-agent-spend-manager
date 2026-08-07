@@ -252,3 +252,39 @@ func TestBuildCounter_RefusesRedisOffLoopback(t *testing.T) {
 		t.Fatal("buildCounter con un Redis en la LAN = nil, quería un error")
 	}
 }
+
+// TestReadableWindow_OnlyWhereThePhaseCanActuallyBeReconstructed: the note the
+// 429 carries is built from this fleet's own transcripts, which describe the
+// Anthropic account and nothing else. Attaching it to another upstream would
+// state a reset that has no relation to the quota being enforced.
+func TestReadableWindow_OnlyWhereThePhaseCanActuallyBeReconstructed(t *testing.T) {
+	cases := map[string]bool{
+		defaultProxyTarget:                true,
+		"https://api.anthropic.com/v1":    true,
+		"https://api.anthropic.com:8443/": true,
+		"https://anthropic.com":           true,
+		"https://api.openai.com":          false,
+		// Suffix matching on the raw string would take this for Anthropic's.
+		"https://anthropic.com.attacker.example": false,
+		"https://notanthropic.com":               false,
+		"":                                       false,
+		"://roto":                                false,
+	}
+	for target, want := range cases {
+		if got := readableWindow(target); got != want {
+			t.Errorf("readableWindow(%q) = %v, want %v", target, got, want)
+		}
+	}
+}
+
+// TestResetNoteFor_LeavesOtherProvidersWithoutANote is the wiring side of the
+// same rule: no note at all beats an invented one.
+func TestResetNoteFor_LeavesOtherProvidersWithoutANote(t *testing.T) {
+	note, err := resetNoteFor("https://api.openai.com")
+	if err != nil {
+		t.Fatalf("resetNoteFor error: %v", err)
+	}
+	if note != nil {
+		t.Errorf("nota = %q, want ninguna para un proveedor cuya ventana no leemos", note())
+	}
+}

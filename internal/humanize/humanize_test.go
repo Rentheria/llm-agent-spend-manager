@@ -1,6 +1,9 @@
 package humanize
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestInt_GroupsByThousands(t *testing.T) {
 	cases := map[int]string{
@@ -29,6 +32,22 @@ func TestMillions_AbbreviatesOnlyAboveTheThreshold(t *testing.T) {
 	for in, want := range cases {
 		if got := Millions(in); got != want {
 			t.Errorf("Millions(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDuration_ReadsTheWayAWaitIsSpoken(t *testing.T) {
+	cases := map[time.Duration]string{
+		-time.Hour:                   "0 min",
+		0:                            "0 min",
+		45 * time.Minute:             "45 min",
+		time.Hour:                    "1 h 0 min",
+		3*time.Hour + 28*time.Minute: "3 h 28 min",
+		30 * time.Hour:               "1 d 6 h",
+	}
+	for in, want := range cases {
+		if got := Duration(in); got != want {
+			t.Errorf("Duration(%s) = %q, want %q", in, got, want)
 		}
 	}
 }

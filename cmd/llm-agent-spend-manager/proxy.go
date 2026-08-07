@@ -6,14 +6,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Rentheria/llm-agent-spend-manager/internal/aggregate"
 	"github.com/Rentheria/llm-agent-spend-manager/internal/enforce"
 	"github.com/Rentheria/llm-agent-spend-manager/internal/proxy"
+	"github.com/Rentheria/llm-agent-spend-manager/internal/sessionreset"
 )
 
 const (
@@ -109,6 +112,14 @@ func cmdProxy(args []string, out io.Writer) int {
 	if cfg.countsResponseUsage {
 		opts = append(opts, proxy.WithUsageCounting())
 	}
+	note, err := resetNoteFor(*target)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 2
+	}
+	if note != nil {
+		opts = append(opts, proxy.WithResetNote(note))
+	}
 	px, err := proxy.New(*target, limiter, opts...)
 	if err != nil {
 		fmt.Fprintln(out, "no pude construir el proxy:", err)
@@ -124,6 +135,46 @@ func cmdProxy(args []string, out io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// anthropicHostSuffix is the upstream whose window phase this tool can
+// reconstruct — it reads Claude Code's and OpenClaw's transcripts, and no
+// other provider's.
+const anthropicHostSuffix = "anthropic.com"
+
+// resetNoteFor wires the real reset into rejections when the upstream is one
+// whose window this tool can actually reconstruct. Any other --target gets no
+// note at all: a made-up ETA would be the same lie this whole path exists to
+// stop telling. A nil note with a nil error means exactly that.
+//
+// The first reading is kicked off here rather than on the first rejection, so
+// the fleet's first 429 already carries an ETA instead of an apology. It runs in
+// the background: the scan takes ~11.5 s and the proxy has a port to bind.
+func resetNoteFor(target string) (proxy.ResetNote, error) {
+	if !readableWindow(target) {
+		return nil, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("no pude ubicar tu carpeta de usuario para leer la fase real de la ventana: %w", err)
+	}
+	resolver := sessionreset.New(func() (aggregate.Snapshot, error) { return aggregate.CollectSnapshot(homeDir) })
+	resolver.Current()
+	return resolver.Note, nil
+}
+
+// readableWindow reports whether this tool can reconstruct the upstream's quota
+// window. It matches the host and never a substring of it: "anthropic.com.evil"
+// is somebody else's server, and the note it would carry is this fleet's own
+// usage data.
+func readableWindow(target string) bool {
+	u, err := url.Parse(target)
+	if err != nil {
+		// A malformed target is proxy.New's error to report, with its wording.
+		return false
+	}
+	host := u.Hostname()
+	return host == anthropicHostSuffix || strings.HasSuffix(host, "."+anthropicHostSuffix)
 }
 
 // buildCounter picks where the cap's tally lives, and returns a description of

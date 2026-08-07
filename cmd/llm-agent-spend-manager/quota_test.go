@@ -255,20 +255,6 @@ func TestUnmeasuredNote_OnlyAppearsWhenSomethingIsUnreadable(t *testing.T) {
 	}
 }
 
-func TestDuration_ReadsTheWayAWaitIsSpoken(t *testing.T) {
-	cases := map[time.Duration]string{
-		-time.Hour:                   "0 min",
-		45 * time.Minute:             "45 min",
-		3*time.Hour + 28*time.Minute: "3 h 28 min",
-		30 * time.Hour:               "1 d 6 h",
-	}
-	for in, want := range cases {
-		if got := duration(in); got != want {
-			t.Errorf("duration(%s) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestPercent_KeepsARangeARange(t *testing.T) {
 	if got := percent(quota.ExactMeasure(0.68)); got != "68%" {
 		t.Errorf("exact percent = %q", got)

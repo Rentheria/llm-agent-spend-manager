@@ -190,3 +190,73 @@ func TestContextBytesAmount_WeighsNothingWhenTheLengthIsUndeclared(t *testing.T)
 		t.Errorf("ContextBytesAmount = %d, want 0 for an undeclared length", got)
 	}
 }
+
+// TestProxy_RejectionCarriesTheProviderReset is what T139 asked for: a 429 that
+// only reports the counter tells the fleet nothing about when it can work again,
+// and the counter's own window (anchored to the epoch) cannot answer that.
+func TestProxy_RejectionCarriesTheProviderReset(t *testing.T) {
+	up, _ := upstream(t)
+	p, err := New(up.URL, testLimiter(t, 1), overweight(),
+		WithResetNote(func() string { return "la ventana real se libera en 1 h 34 min" }))
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+
+	res, err := http.Get(srv.URL + "/v1/messages")
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", res.StatusCode)
+	}
+	if !strings.Contains(string(body), "combined budget cap reached") {
+		t.Errorf("cuerpo = %q, want que siga diciendo qué tope rechazó", body)
+	}
+	if !strings.Contains(string(body), "1 h 34 min") {
+		t.Errorf("cuerpo = %q, want el reset real del proveedor", body)
+	}
+}
+
+// TestProxy_RejectionWithoutANoteStaysAsItWas: the note is optional, and a
+// provider whose phase this tool cannot reconstruct gets no invented sentence.
+func TestProxy_RejectionWithoutANoteStaysAsItWas(t *testing.T) {
+	up, _ := upstream(t)
+	quiet := func() string { return "" }
+	for name, p := range map[string]*Proxy{
+		"sin opción": mustProxy(t, up.URL, testLimiter(t, 1), overweight()),
+		"nota vacía": mustProxy(t, up.URL, testLimiter(t, 1), overweight(), WithResetNote(quiet)),
+	} {
+		srv := httptest.NewServer(p)
+		res, err := http.Get(srv.URL + "/v1/messages")
+		if err != nil {
+			srv.Close()
+			t.Fatalf("%s: request: %v", name, err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		srv.Close()
+		if got, want := strings.TrimSpace(string(body)), "combined budget cap reached (5/1)"; got != want {
+			t.Errorf("%s: cuerpo = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// overweight makes the very first request land over the cap, so a test about the
+// rejection body does not have to spend requests getting there.
+func overweight() Option {
+	return WithAmountFunc(func(*http.Request) int64 { return 5 })
+}
+
+func mustProxy(t *testing.T, target string, limiter *enforce.Limiter, opts ...Option) *Proxy {
+	t.Helper()
+	p, err := New(target, limiter, opts...)
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+	return p
+}

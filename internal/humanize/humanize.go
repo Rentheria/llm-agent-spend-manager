@@ -3,7 +3,10 @@
 // report — instead of each layer growing its own separator logic.
 package humanize
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Int formats an integer with comma separators
 // (e.g. 10107657766 -> "10,107,657,766").
@@ -35,4 +38,19 @@ func Millions(v float64) string {
 		return Int(int(v))
 	}
 	return fmt.Sprintf("%.1fM", v/millionsThreshold)
+}
+
+// Duration renders a span the way someone waiting on it would say it. Anything
+// already elapsed reads as zero rather than as a negative number of minutes.
+func Duration(d time.Duration) string {
+	if d <= 0 {
+		return "0 min"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%d h %d min", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%d d %d h", int(d.Hours())/24, int(d.Hours())%24)
 }

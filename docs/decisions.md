@@ -245,3 +245,62 @@ PWA instalable desde el navegador.
 
 Queda como fase futura **solo si** el uso real demuestra que hace falta algo que la PWA no puede
 dar (por ejemplo push nativo) — no como apuesta de entrada.
+
+---
+
+## ADR-13 — El 429 dice cuándo se libera la ventana real; el tope sigue anclado a la época
+
+**Contexto.** El tope que aplica el proxy (`internal/enforce`) corre sobre una ventana anclada a la
+época: `bucketIndex = now.UnixMilli() / window.Milliseconds()`. La ventana real de 5 h de Anthropic
+no tiene esa fase: abre con el primer turno de la cuenta, al minuto que haya caído. El 2026-08-06 el
+proxy rechazó a la flota con `combined budget cap reached` mientras la pantalla de Anthropic decía
+"58% used, resets in 1h34min": el 429 no mentía sobre el tope propio, pero no decía nada cierto
+sobre cuándo se podía volver a trabajar, y quien lo leía asumía lo segundo. `internal/quota` ya
+reconstruye la fase real (`SessionWindows`, calibrada contra 5 agotamientos observados, error de 6 s
+a 45.7 min) — pero solo alimentaba reportes y CLI, nunca la ruta que rechaza.
+
+**Opciones consideradas.**
+1. **Exponer el ETA real en el rechazo, sin tocar el mecanismo del tope** — el 429 y el aviso de
+   Telegram dicen cuándo refila la ventana real; el tope sigue igual. Barato y reversible; no
+   arregla que el tope corte en una fase distinta a la del plan.
+2. **Anclar `windowState` al primer tráfico visto por clave**, persistiendo el inicio de ventana en
+   SQLite junto al contador. Ataca la raíz aparente; cuesta migración del estado y **rompe la
+   propiedad que el anclaje a la época compra**: hoy 4610 y 4611 coinciden en los mismos bordes sin
+   coordinarse, y con un inicio persistido el borde pasa a ser un dato compartido más que puede
+   quedar desincronizado.
+3. **Calcular el ETA dentro del handler del 429**, sin caché. Siempre fresco; inviable: el escaneo
+   de la máquina midió 11.5 s de reloj y ~110 MB de RSS pico (2026-08-06), y el guard que vigila
+   este proxy le da 8 s al 429 completo antes de declararlo caído.
+4. **Refrescar el ETA con un timer** cada N minutos. Siempre listo; gasta 11.5 s de CPU y un pico de
+   ~110 MB para siempre, en una máquina compartida que ya se ha quedado sin memoria, para responder
+   una pregunta que casi nunca se hace.
+
+**Decisión.** La 1, con la lectura cacheada y refrescada **en segundo plano, disparada por el propio
+rechazo** (`internal/sessionreset`). El proxy recibe una función que devuelve una frase ya calculada
+(`proxy.WithResetNote`) y no sabe qué es una ventana de 5 h: la fase la reconstruye `internal/quota`,
+que es donde está calibrada. Una ventana viva no se vuelve a escanear — su reset ya no se mueve —,
+así que el costo se paga cuando la fase se desconoce o venció, no por reloj.
+
+La 2 **no se implementa, y no solo por tamaño**: anclar al primer tráfico *visto por el proxy*
+tampoco daría la fase real, porque el proxy solo ve lo que pasa por él, mientras que la ventana de
+Anthropic la abre cualquier turno de la cuenta — incluidas sesiones interactivas que nunca lo
+tocan. Se pagaría la coordinación entre carriles a cambio de una fase que seguiría siendo la
+equivocada. La forma correcta de esa ruta sería alimentar el ancla desde la misma reconstrucción de
+`internal/quota`, y eso ya es otro ticket.
+
+**Consecuencias.**
+- El tope sigue cortando en fase de época: **sigue siendo posible** que el proxy tope a la flota con
+  quota real disponible, o que refile antes que el plan. Lo que cambia es que ahora el mensaje lo
+  dice en lugar de callarlo. Si esa desalineación estorba en la práctica, el ticket siguiente es el
+  ancla real, no este.
+- El ETA puede venir de una lectura de hasta 5 minutos atrás cuando no hay ventana viva
+  (`idleStaleAfter`), y el primer 429 tras arrancar el proxy puede llegar sin ETA si el escaneo
+  inicial no terminó. Ambos casos se dicen con esas palabras; no se rellenan con un número.
+- Si el escaneo falla, el 429 carga el error en vez de reportar "no hay ventana en vuelo", que se
+  leería como buena noticia.
+- El aviso de Telegram de `kazi-llm-lane-guard.sh` hereda la frase sin cambios de código: interpola
+  el cuerpo del 429 (`$CUERPO`). Ese script vive fuera del repo.
+- `humanize.Duration` sube de `cmd` a `internal/humanize` para que el 429 y el CLI deletreen la
+  espera igual.
+
+Refs: T139.

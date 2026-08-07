@@ -112,6 +112,14 @@ curl -sD- -o/dev/null 127.0.0.1:4610/v1/messages | grep -i '^x-cap'
 producción): **HTTP 429** con `Retry-After: 60`, `X-Cap-Remaining: 0` y el cuerpo
 `combined budget cap reached (60000/50000)`. El upstream **no** se toca.
 
+Cuando el upstream es Anthropic, ese cuerpo trae además cuándo refila la ventana **real** de 5 h —
+`… — la ventana real de 5 h de Anthropic se libera en 1 h 34 min (~21:12)` (T139, ADR-13). Es otro
+reloj que el del tope: el contador corre sobre una ventana anclada a la época, así que "topaste" y
+"Anthropic te cortó" no son lo mismo y el mensaje ahora los distingue. Si dice que no hay ventana en
+vuelo, el 429 es solo del tope propio y subirlo desbloquea la flota; si da una hora, hay que
+esperarla. La fase se lee en segundo plano (un escaneo completo cuesta ~11.5 s), así que el primer
+429 tras arrancar el servicio puede llegar sin ETA y decirlo con esas palabras.
+
 Dos cosas que hay que saber de antemano, porque en la emergencia no es momento de descubrirlas:
 
 - **Los clientes no dicen "topaste el presupuesto".** Un CLI headless honra el `Retry-After` y se

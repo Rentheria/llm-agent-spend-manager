@@ -18,6 +18,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -76,6 +77,20 @@ const authCookieName = "lasm_token"
 // requests (or a peer hammering /api/*) can't force a full disk rescan per hit.
 const defaultCacheTTL = 10 * time.Second
 
+// defaultWarmupWait bounds how long a request may wait when no snapshot exists
+// yet — the window between start-up and the first scan finishing. Past it the
+// request is answered 503 + Retry-After instead of holding the connection open
+// for the length of a full scan, which on this machine outlives WriteTimeout
+// and gets answered with nothing at all (T127/F1). Serve primes the cache at
+// start-up, so in a long-running service this window is the first seconds of
+// the process and nothing else.
+const defaultWarmupWait = 5 * time.Second
+
+// errWarmingUp means no snapshot has been read yet and the first scan is still
+// running. It is a "come back in a moment", not a failure, and handlers map it
+// to 503 so a client can tell it apart from data that genuinely is zero.
+var errWarmingUp = errors.New("usage snapshot is still being read from disk")
+
 // defaultBreakdownDays is how far back /api/quota's "who is eating it" looks,
 // matching the CLI quota command's default.
 const defaultBreakdownDays = 3
@@ -95,13 +110,31 @@ type Server struct {
 	// Result cache with single-flight: coalesces concurrent loads and reuses a
 	// fresh result for cacheTTL, so each request no longer triggers a full
 	// re-scan of every agent's on-disk data (L-01).
+	//
+	// Once any snapshot is held, a request is never blocked on a rescan: the
+	// held copy is served immediately and the refresh runs in the background
+	// (see cachedLoad). A full scan of this machine's stores takes tens of
+	// seconds — longer than the server's WriteTimeout — so a handler that
+	// waited for one had its connection closed with no body written at all,
+	// which the dashboard renders as an empty page (T127/F1).
 	cacheTTL      time.Duration
+	warmupWait    time.Duration
 	cacheMu       sync.Mutex
-	cacheCond     *sync.Cond
 	cacheSnapshot aggregate.Snapshot
 	cacheErr      error
-	cacheAt       time.Time
-	cacheLoading  bool
+	// cacheAt is when the held snapshot was read off disk; lastAttempt is when a
+	// load last finished, successfully or not. The two diverge after a failed
+	// refresh, which keeps the good snapshot but still counts as an attempt so
+	// an unreadable store can't spin the scanner in a hot loop.
+	cacheAt     time.Time
+	lastAttempt time.Time
+	// cacheReady is false only during warm-up, before any load has finished. It
+	// is what separates "no answer yet" from "an answer that happens to be an
+	// error", which are different HTTP responses.
+	cacheReady bool
+	// loading is non-nil while a scan is in flight and closed when it finishes,
+	// so a warm-up waiter can block on it with a deadline (sync.Cond cannot).
+	loading chan struct{}
 }
 
 // Option customizes a Server (clock/location injection for tests).
@@ -120,8 +153,12 @@ func WithLocation(loc *time.Location) Option { return func(s *Server) { s.loc = 
 // so a peer on the same Wi-Fi can no longer read the dashboard unauthenticated.
 func WithToken(token string) Option { return func(s *Server) { s.token = token } }
 
-// WithCacheTTL sets how long a load() result is reused before rescanning
-// (default 10s). A non-positive value disables the cache (rescan every request).
+// WithCacheTTL sets how long a load() result is reused before a rescan is due
+// (default 10s). A non-positive value makes every request schedule a rescan.
+//
+// The TTL governs when a refresh starts, not whether a request waits for one:
+// past the TTL the held snapshot is still served immediately and the rescan
+// runs behind it (see cachedLoad).
 func WithCacheTTL(ttl time.Duration) Option { return func(s *Server) { s.cacheTTL = ttl } }
 
 // WithChangesLoader wires /api/outcome to an I/O source for marked changes.
@@ -145,13 +182,13 @@ func WithGetenv(getenv func(string) string) Option {
 // New builds a Server that reads the machine snapshot via load.
 func New(load SnapshotLoader, opts ...Option) *Server {
 	s := &Server{
-		load:     load,
-		now:      time.Now,
-		loc:      time.Local,
-		mux:      http.NewServeMux(),
-		cacheTTL: defaultCacheTTL,
+		load:       load,
+		now:        time.Now,
+		loc:        time.Local,
+		mux:        http.NewServeMux(),
+		cacheTTL:   defaultCacheTTL,
+		warmupWait: defaultWarmupWait,
 	}
-	s.cacheCond = sync.NewCond(&s.cacheMu)
 	for _, o := range opts {
 		o(s)
 	}
@@ -230,65 +267,128 @@ func extractToken(r *http.Request) (token string, fromQuery bool) {
 // conventions (e.g. ":4600" for all interfaces, "127.0.0.1:4600" for localhost
 // only).
 func (s *Server) Serve(addr string) error {
+	// Read the machine once before anyone asks, so the first page load is
+	// answered from the cache instead of paying for a cold scan (T127/F1).
+	s.Warm()
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		// A slow or hung client can't tie up the handler indefinitely (L-01).
-		// WriteTimeout is generous because a cold load walks several on-disk
-		// stores; the cache keeps the common case well under it.
+		// No handler waits on a scan any more — the longest a request can block
+		// on data is warmupWait — so this bounds slow clients only, and a cold
+		// load can no longer run past it and lose the response (T127/F1).
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 	return srv.ListenAndServe()
 }
 
-// cachedLoad returns the current snapshot, reusing a result younger than
-// cacheTTL and coalescing concurrent misses into a single load (single-flight),
-// so a burst of API requests can't each trigger a full on-disk rescan (L-01).
-func (s *Server) cachedLoad() (aggregate.Snapshot, error) {
+// cachedLoad returns the snapshot a request should be answered from, plus the
+// moment it was read off disk (which is older than "now" whenever a background
+// refresh is still running).
+//
+// Once a snapshot is held this never blocks: a stale copy is returned at once
+// and the rescan happens in the background (stale-while-revalidate), coalesced
+// into a single load so a burst of requests can't each trigger a rescan (L-01).
+// Only warm-up can wait, and only for warmupWait.
+//
+// Blocking a request for the length of a full scan is precisely what emptied
+// the dashboard (T127/F1): the scan outlived WriteTimeout, so the connection
+// was closed before a single byte of the response was written and every panel
+// fell back to its empty state.
+func (s *Server) cachedLoad(ctx context.Context) (aggregate.Snapshot, time.Time, error) {
 	s.cacheMu.Lock()
-	if s.fresh() {
-		defer s.cacheMu.Unlock()
-		return s.cacheSnapshot, s.cacheErr
+	if !s.fresh() || !s.cacheReady {
+		s.startLoadLocked()
 	}
-	// Another goroutine is already loading: wait and reuse its result instead of
-	// launching a duplicate scan.
-	for s.cacheLoading {
-		s.cacheCond.Wait()
-		if s.fresh() {
-			defer s.cacheMu.Unlock()
-			return s.cacheSnapshot, s.cacheErr
-		}
+	if s.cacheReady {
+		snapshot, at, err := s.cacheSnapshot, s.cacheAt, s.cacheErr
+		s.cacheMu.Unlock()
+		return snapshot, at, err
 	}
-	s.cacheLoading = true
+	done := s.loading
 	s.cacheMu.Unlock()
 
-	snapshot, err := s.load()
+	// Warm-up: give the first scan a bounded moment to land, then answer "not
+	// yet" rather than holding the connection until it dies.
+	timer := time.NewTimer(s.warmupWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	case <-ctx.Done():
+		return aggregate.Snapshot{}, time.Time{}, ctx.Err()
+	}
 
 	s.cacheMu.Lock()
-	s.cacheSnapshot, s.cacheErr, s.cacheAt = snapshot, err, s.now()
-	s.cacheLoading = false
-	s.cacheCond.Broadcast()
-	s.cacheMu.Unlock()
-	return snapshot, err
+	defer s.cacheMu.Unlock()
+	if !s.cacheReady {
+		return aggregate.Snapshot{}, time.Time{}, errWarmingUp
+	}
+	return s.cacheSnapshot, s.cacheAt, s.cacheErr
 }
 
-// fresh reports whether the cache holds a result still within the TTL. Caller
-// holds cacheMu. A non-positive TTL disables caching (never fresh).
+// startLoadLocked launches a scan unless one is already running. Caller holds
+// cacheMu. The scan itself runs without the lock held, so requests keep being
+// served from the held snapshot for its whole duration.
+func (s *Server) startLoadLocked() {
+	if s.loading != nil {
+		return
+	}
+	done := make(chan struct{})
+	s.loading = done
+	go func() {
+		defer close(done)
+		snapshot, err := s.load()
+
+		s.cacheMu.Lock()
+		defer s.cacheMu.Unlock()
+		s.loading = nil
+		s.lastAttempt = s.now()
+		// A failed rescan must not erase a snapshot that worked. Dropping to an
+		// error page because one read of a live SQLite store happened to fail
+		// would turn a transient blip into "the fleet did nothing" — the same
+		// wrong claim this whole path exists to avoid.
+		if err != nil && s.cacheReady && s.cacheErr == nil {
+			return
+		}
+		s.cacheSnapshot, s.cacheErr, s.cacheAt = snapshot, err, s.lastAttempt
+		s.cacheReady = true
+	}()
+}
+
+// Warm starts the first scan in the background so the cache is primed before
+// any request arrives. Serve calls it; a long-running service therefore pays
+// the cold-scan cost once at start-up instead of on a user's first page load.
+func (s *Server) Warm() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.startLoadLocked()
+}
+
+// fresh reports whether the last load attempt is recent enough that another one
+// isn't due yet. Caller holds cacheMu. A non-positive TTL disables caching, so
+// every request schedules a refresh (it still answers from the held snapshot).
 func (s *Server) fresh() bool {
-	return s.cacheTTL > 0 && !s.cacheAt.IsZero() && s.now().Sub(s.cacheAt) < s.cacheTTL
+	return s.cacheTTL > 0 && !s.lastAttempt.IsZero() && s.now().Sub(s.lastAttempt) < s.cacheTTL
 }
 
 // summaryResponse is the payload of /api/summary for one time window.
 type summaryResponse struct {
-	Window      string                  `json:"window"`
-	GeneratedAt time.Time               `json:"generatedAt"`
-	CostLabel   string                  `json:"costLabel"`
-	Disclaimer  string                  `json:"disclaimer"`
-	ByAgent     []aggregate.AgentTotals `json:"byAgent"`
-	ByMode      []aggregate.ModeTotals  `json:"byMode"`
-	Grand       aggregate.Totals        `json:"grand"`
+	Window      string    `json:"window"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	// SnapshotAt is when the underlying scan read the disk; GeneratedAt is when
+	// this response was rendered. They differ while a refresh is in flight, and
+	// the gap matters: a snapshot taken yesterday, filtered to the "today"
+	// window, reports zero — which would read as "the fleet did nothing today"
+	// rather than "these numbers are from yesterday" (T127/F1).
+	SnapshotAt time.Time               `json:"snapshotAt"`
+	CostLabel  string                  `json:"costLabel"`
+	Disclaimer string                  `json:"disclaimer"`
+	ByAgent    []aggregate.AgentTotals `json:"byAgent"`
+	ByMode     []aggregate.ModeTotals  `json:"byMode"`
+	Grand      aggregate.Totals        `json:"grand"`
 }
 
 // dailyResponse is the payload of /api/daily: per-agent, per-day totals over
@@ -311,10 +411,37 @@ type outcomeResponse struct {
 	Outcomes    advise.OutcomeLedger `json:"outcomes"`
 }
 
-func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.cachedLoad()
-	if err != nil {
+// snapshotHeader names the moment the served data was read off disk. A client
+// that cares whether it is looking at a refresh-in-flight (and every time-windowed
+// view does — a stale snapshot filtered to "today" reports zero, which is a
+// different claim from "nothing ran today") can read it without parsing a body.
+const snapshotHeader = "X-Snapshot-At"
+
+// loadForRequest resolves the snapshot for one request. When it returns false
+// the response has already been written and the handler must return: 503 while
+// the first scan is still running, 500 for a genuine read failure. On success
+// it stamps the snapshot's age onto the response.
+// The snapshot's timestamp is returned alongside the data it belongs to, never
+// re-read afterwards: a background refresh landing in between would stamp a
+// response with a time that doesn't describe the numbers in it.
+func (s *Server) loadForRequest(w http.ResponseWriter, r *http.Request) (aggregate.Snapshot, time.Time, bool) {
+	snapshot, at, err := s.cachedLoad(r.Context())
+	switch {
+	case errors.Is(err, errWarmingUp):
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "usage data is still being read from disk; retry shortly", http.StatusServiceUnavailable)
+		return aggregate.Snapshot{}, time.Time{}, false
+	case err != nil:
 		http.Error(w, "failed to load usage data", http.StatusInternalServerError)
+		return aggregate.Snapshot{}, time.Time{}, false
+	}
+	w.Header().Set(snapshotHeader, at.Format(time.RFC3339))
+	return snapshot, at, true
+}
+
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	snapshot, snapshotAt, ok := s.loadForRequest(w, r)
+	if !ok {
 		return
 	}
 	window := parseWindow(r.URL.Query().Get("window"))
@@ -323,6 +450,7 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, summaryResponse{
 		Window:      string(window),
 		GeneratedAt: now,
+		SnapshotAt:  snapshotAt,
 		CostLabel:   aggregate.CostLabel,
 		Disclaimer:  aggregate.CostDisclaimer,
 		ByAgent:     aggregate.ByAgent(filtered),
@@ -332,9 +460,8 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.cachedLoad()
-	if err != nil {
-		http.Error(w, "failed to load usage data", http.StatusInternalServerError)
+	snapshot, _, ok := s.loadForRequest(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, dailyResponse{
@@ -350,9 +477,8 @@ func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
 // to the whole history rather than today, because a trend needs several days of
 // data and "today" would almost always answer insufficient-data.
 func (s *Server) handleAdvice(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.cachedLoad()
-	if err != nil {
-		http.Error(w, "failed to load usage data", http.StatusInternalServerError)
+	snapshot, _, ok := s.loadForRequest(w, r)
+	if !ok {
 		return
 	}
 	window := aggregate.WindowAll
@@ -382,9 +508,8 @@ func (s *Server) withBootFiles(report advise.Report) advise.Report {
 // the CLI `quota` command takes. The primary metric is how much of each cycle is
 // gone and how long it lasts; the $ stays secondary under its mandatory label.
 func (s *Server) handleQuota(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.cachedLoad()
-	if err != nil {
-		http.Error(w, "failed to load usage data", http.StatusInternalServerError)
+	snapshot, _, ok := s.loadForRequest(w, r)
+	if !ok {
 		return
 	}
 	cfg, err := quota.LoadConfig(s.getenv)
@@ -413,9 +538,8 @@ func (s *Server) handleOutcome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "outcome not configured: no changes loader wired", http.StatusNotImplemented)
 		return
 	}
-	snapshot, err := s.cachedLoad()
-	if err != nil {
-		http.Error(w, "failed to load usage data", http.StatusInternalServerError)
+	snapshot, _, ok := s.loadForRequest(w, r)
+	if !ok {
 		return
 	}
 	changes, err := s.changesLoad(r.Context())

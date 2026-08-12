@@ -410,3 +410,72 @@ puede permitírselo.
 
 Refs: T139, A7. Revierte el "el ticket siguiente es el ancla real" de ADR-13 con los datos que ese
 mismo ADR pedía para decidirlo.
+
+## ADR-14 — El dashboard responde con el snapshot que tiene y reescanea por detrás; ninguna request espera un escaneo
+
+**Contexto.** El dashboard se abría en cero. No era un problema de datos: `/api/summary?window=all`
+mostraba 2,821M de tokens y las tres fuentes escribían normal. El 2026-08-11, con el servicio
+corriendo, la reproducción fue exacta:
+
+```
+warm: code=200 size=3106 time=0.015s     # cache caliente
+cold: code=000 size=0    time=60.7s      # curl exit 52 — "Empty reply from server"
+```
+
+La causa: `cachedLoad` corría el escaneo completo **dentro del handler HTTP**. Ese escaneo son
+~770 MB (482 MB en 1001 JSONL de Claude Code, 201 MB en 263 `store.db` de Cursor, 88 MB de
+OpenClaw): 43 s en frío, ~15 s con page cache caliente, y bajo `CPUQuota=50%` más. El
+`WriteTimeout` del server es de 30 s, y **no interrumpe al handler**: el escaneo termina igual, y
+al ir a escribir la respuesta el deadline ya venció, así que la conexión se cierra **sin un solo
+byte**. El navegador ve un fetch fallido y cada panel cae a su estado vacío.
+
+Eso explica por qué el fix de T100 se verificó bien y una semana después el síntoma volvió: no se
+rompió nada, el corpus creció y cruzó los 30 s. También por qué se veía intermitente — dos curls
+seguidos dentro del TTL: el segundo pega en cache y funciona.
+
+**Decisión.** El escaneo sale de la ruta de la request:
+- **stale-while-revalidate** — si hay snapshot en mano se sirve YA y el rescan corre en segundo
+  plano. Una request nunca vuelve a esperar un escaneo.
+- **prime al arrancar** — `Serve` escanea antes de escuchar, así el servicio permanente paga el
+  costo en frío una vez y no se lo cobra a quien abra el dashboard primero.
+- **warm-up acotado** — el único caso sin nada que servir (los segundos entre arrancar y terminar
+  el primer escaneo) responde **503 + Retry-After** en 5 s, no una conexión colgada que muere.
+- **un rescan que falla no borra el snapshot bueno** — leer SQLite de agentes que están
+  escribiendo falla de vez en cuando, y contestar eso con una página de error convierte un parpadeo
+  en "la flota no hizo nada".
+
+**Por qué no las otras.** Subir el `WriteTimeout` deja al usuario esperando 60 s frente a una
+pantalla en blanco y vuelve a romperse cuando el corpus crezca otro tanto: mueve el borde, no lo
+quita. Escanear en un ticker fijo mantiene el dato fresco pero deja la máquina —compartida— con un
+escaneo permanente de fondo; con SWR, en idle no se escanea nada. Hacer el escaneo incremental
+(índice por mtime) es la respuesta de fondo al costo y sigue pendiente: esta decisión hace que ese
+costo ya no produzca números equivocados, no que desaparezca.
+
+**Un dato viejo no se presenta como fresco.** Servir stale tiene un filo propio, y es justo el
+mismo síntoma: un snapshot leído ayer, filtrado a la ventana "hoy", suma **cero** — que se lee como
+"la flota no hizo nada hoy" y no como "estos números son de ayer". Por eso la respuesta ahora lleva
+`snapshotAt` (y el header `X-Snapshot-At`) separado de `generatedAt`, y el dashboard, cuando el
+snapshot está viejo, lo dice y vuelve a pedir en vez de dejar el cero en pantalla. Es ADR-07 en la
+ruta de lectura: si el número no se puede dar fresco, se dice.
+
+**GOMEMLIMIT, que era la mitad que faltaba.** Con el fix ya puesto, los refrescos en segundo plano
+**no avanzaban**: el snapshot quedaba congelado. El servicio estaba clavado en **253.5M / 256M con
+2.4M libres**. Un escaneo retiene ~56 MB de heap vivo pero asigna ~3.7 GB en el camino, y sin techo
+propio el runtime de Go deja crecer el RSS hasta el límite duro del cgroup; ahí cada asignación
+entra en reclaim directo y el escaneo no progresa. `Environment=GOMEMLIMIT=200MiB` le pone un techo
+**suave** por debajo del duro. No se relajó ningún límite: `MemoryMax=256M`, `CPUQuota=50%`,
+`ProtectHome=read-only` y el resto del endurecimiento quedan igual. Verificado en vivo: el snapshot
+avanza cada ciclo (20:52:59 → 20:54:32 → 20:56:22 → 20:58:13), los turnos suben con actividad real
+(2454 → 2459 → 2474) y la memoria se estaciona en 120–135 MB.
+
+**Consecuencias.**
+- El `--cache-ttl` ya no decide si una request espera, solo cuándo se dispara el refresco.
+- El dashboard puede mostrar datos de hace un rato; lo dice, y se actualiza solo.
+- Queda pendiente el costo real del escaneo (43 s en frío y creciendo con el corpus). Mientras
+  `snapshotAt` se vea al día, es deuda de eficiencia; si el escaneo llegara a durar más que el TTL
+  de forma sostenida, el dato empieza a atrasarse y ahí sí toca el índice incremental.
+- El comentario de la unidad decía "~6 s de CPU y ~79 MB". Estaba desactualizado por un factor de
+  7 y nadie lo notó porque nada lo verifica; quedó corregido con las cifras medidas.
+
+Refs: T127/F1, T126, T100. La sospecha de T100 (sidecars `-shm`/`-wal` borrándose bajo
+`ProtectHome=read-only`) queda **descartada**: los datos siempre estuvieron ahí y se leían bien.

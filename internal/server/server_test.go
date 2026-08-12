@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -253,7 +254,26 @@ func TestAuth_ValidTokenViaQueryHeaderAndCookie(t *testing.T) {
 	}
 }
 
-func TestCache_ReusesWithinTTLThenExpires(t *testing.T) {
+// waitIdle blocks until no scan is in flight. Refreshes now run in the
+// background, so a test that asserts on the loader's call count has to wait for
+// the scan its request scheduled instead of reading the count straight after
+// the response comes back.
+func waitIdle(t *testing.T, s *Server) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.cacheMu.Lock()
+		idle := s.loading == nil
+		s.cacheMu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the background scan to finish")
+}
+
+func TestCache_ReusesWithinTTLThenRefreshes(t *testing.T) {
 	var calls int32
 	loader := func() (aggregate.Snapshot, error) {
 		atomic.AddInt32(&calls, 1)
@@ -265,7 +285,8 @@ func TestCache_ReusesWithinTTLThenExpires(t *testing.T) {
 	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
 
-	h := New(loader, WithClock(clock), WithLocation(time.UTC), WithCacheTTL(10*time.Second)).Handler()
+	s := New(loader, WithClock(clock), WithLocation(time.UTC), WithCacheTTL(10*time.Second))
+	h := s.Handler()
 
 	hit := func() {
 		rr := httptest.NewRecorder()
@@ -275,15 +296,17 @@ func TestCache_ReusesWithinTTLThenExpires(t *testing.T) {
 		}
 	}
 
-	hit() // cold: 1 load
-	hit() // within TTL: cached
-	hit() // within TTL: cached
+	hit() // cold: the warm-up scan, which this request does wait for
+	waitIdle(t, s)
+	hit() // within TTL: served from the held snapshot
+	hit() // within TTL: served from the held snapshot
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("loads within TTL = %d, want 1 (cached)", got)
 	}
 
 	advance(11 * time.Second) // past TTL
-	hit()                     // reload
+	hit()                     // answered from the held snapshot, refresh scheduled behind it
+	waitIdle(t, s)
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Fatalf("loads after TTL expiry = %d, want 2", got)
 	}
@@ -325,13 +348,201 @@ func TestCache_DisabledWhenTTLZero(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		return fixtureLoader()
 	}
-	h := New(loader, WithClock(fixedNow), WithLocation(time.UTC), WithCacheTTL(0)).Handler()
+	s := New(loader, WithClock(fixedNow), WithLocation(time.UTC), WithCacheTTL(0))
+	h := s.Handler()
+	// Awaited one at a time: with the cache off every request schedules its own
+	// rescan, but concurrent ones would still coalesce into a single flight.
 	for i := 0; i < 3; i++ {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+		waitIdle(t, s)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
 		t.Fatalf("loads with cache disabled = %d, want 3", got)
+	}
+}
+
+// TestCache_StaleSnapshotIsServedWhileTheRescanRuns is the regression test for
+// T127/F1. A full scan of a real machine takes tens of seconds — longer than
+// the server's WriteTimeout — so when a handler waited for one, the connection
+// was closed before any of the response was written and every dashboard panel
+// fell back to its empty state: the fleet looked idle when it wasn't. A request
+// must therefore never wait on a rescan once a snapshot is held.
+func TestCache_StaleSnapshotIsServedWhileTheRescanRuns(t *testing.T) {
+	var calls int32
+	release := make(chan struct{})
+	loader := func() (aggregate.Snapshot, error) {
+		// Only the refresh hangs; the warm-up scan returns straight away.
+		if atomic.AddInt32(&calls, 1) > 1 {
+			<-release
+		}
+		return fixtureLoader()
+	}
+	var mu sync.Mutex
+	now := fixedNow()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+
+	s := New(loader, WithClock(clock), WithLocation(time.UTC), WithCacheTTL(10*time.Second))
+	h := s.Handler()
+	defer close(release)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("warm-up status = %d, want 200", rr.Code)
+	}
+	waitIdle(t, s)
+
+	mu.Lock()
+	now = now.Add(time.Hour) // long past the TTL: the held snapshot is stale
+	mu.Unlock()
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+		done <- rr
+	}()
+
+	select {
+	case rr := <-done:
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status while refreshing = %d, want 200 from the held snapshot", rr.Code)
+		}
+		if rr.Body.Len() == 0 {
+			t.Fatal("empty body while refreshing: this is the T127/F1 failure")
+		}
+		var got summaryResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Grand.Turns == 0 {
+			t.Fatal("served zero turns while refreshing, want the held snapshot's data")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request blocked on the in-flight rescan instead of serving the held snapshot")
+	}
+}
+
+// TestCache_WarmupAnswers503RatherThanHangingOnTheFirstScan covers the one case
+// that genuinely has nothing to serve. It must still answer quickly: a request
+// held open for the length of a cold scan outlives WriteTimeout and reaches the
+// client as an empty body, which reads as "no activity" rather than "not yet".
+func TestCache_WarmupAnswers503RatherThanHangingOnTheFirstScan(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	loader := func() (aggregate.Snapshot, error) {
+		<-release
+		return fixtureLoader()
+	}
+	s := New(loader, WithClock(fixedNow), WithLocation(time.UTC))
+	s.warmupWait = 20 * time.Millisecond
+	h := s.Handler()
+
+	rr := httptest.NewRecorder()
+	start := time.Now()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	elapsed := time.Since(start)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status during warm-up = %d, want 503", rr.Code)
+	}
+	if got := rr.Header().Get("Retry-After"); got == "" {
+		t.Error("no Retry-After header: a client can't tell this is temporary")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("warm-up request took %v, want it bounded by warmupWait", elapsed)
+	}
+}
+
+// TestCache_FailedRefreshKeepsTheLastGoodSnapshot: one unreadable store must not
+// blank a dashboard that was working. The agents' SQLite stores are read while
+// they are being written, so a transient failure is expected, and answering it
+// with an error page would turn a blip into "the fleet did nothing".
+func TestCache_FailedRefreshKeepsTheLastGoodSnapshot(t *testing.T) {
+	var calls int32
+	loader := func() (aggregate.Snapshot, error) {
+		if atomic.AddInt32(&calls, 1) > 1 {
+			return aggregate.Snapshot{}, errors.New("store.db is locked")
+		}
+		return fixtureLoader()
+	}
+	var mu sync.Mutex
+	now := fixedNow()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+
+	s := New(loader, WithClock(clock), WithLocation(time.UTC), WithCacheTTL(10*time.Second))
+	h := s.Handler()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	waitIdle(t, s)
+
+	mu.Lock()
+	now = now.Add(time.Hour)
+	mu.Unlock()
+
+	rr = httptest.NewRecorder() // schedules the refresh that fails
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	waitIdle(t, s)
+
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status after a failed refresh = %d, want 200 from the last good snapshot", rr.Code)
+	}
+	var got summaryResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Grand.Turns == 0 {
+		t.Fatal("a failed refresh erased the last good snapshot")
+	}
+}
+
+// TestWarm_PrimesTheCacheBeforeAnyRequest: Serve calls this at start-up so a
+// long-running service pays the cold scan once, off the request path, instead
+// of on whoever opens the dashboard first.
+func TestWarm_PrimesTheCacheBeforeAnyRequest(t *testing.T) {
+	var calls int32
+	loader := func() (aggregate.Snapshot, error) {
+		atomic.AddInt32(&calls, 1)
+		return fixtureLoader()
+	}
+	s := New(loader, WithClock(fixedNow), WithLocation(time.UTC), WithCacheTTL(10*time.Second))
+	s.Warm()
+	waitIdle(t, s)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("loads after Warm = %d, want 1 (primed before any request)", got)
+	}
+
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 straight from the primed cache", rr.Code)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("loads after the first request = %d, want 1 (served from the prime)", got)
+	}
+}
+
+// TestSummary_ReportsWhenTheSnapshotWasTaken: a snapshot older than the window
+// it is filtered against reports zero, so a client has to be able to tell "no
+// activity today" from "these numbers predate today".
+func TestSummary_ReportsWhenTheSnapshotWasTaken(t *testing.T) {
+	s := New(fixtureLoader, WithClock(fixedNow), WithLocation(time.UTC))
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/summary?window=today", nil))
+
+	if got := rr.Header().Get(snapshotHeader); got == "" {
+		t.Errorf("no %s header", snapshotHeader)
+	}
+	var got summaryResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SnapshotAt.IsZero() {
+		t.Error("snapshotAt is zero: the response doesn't say how old its data is")
 	}
 }
 

@@ -254,6 +254,26 @@
       return el("div", "err", message);
     }
 
+    // Reading every agent's store takes far longer than a request can stay
+    // open, so the server answers from the snapshot it already holds and
+    // rescans behind the response. Two consequences the page has to handle
+    // instead of rendering them as fact:
+    //
+    //   - a snapshot read before midnight, filtered to "hoy", totals zero —
+    //     which looks exactly like a fleet that did nothing;
+    //   - right after the service starts there is no snapshot yet (503).
+    //
+    // Both are temporary, so say so and pick up the fresh numbers when they
+    // land rather than leaving a zero on screen.
+    const SNAPSHOT_STALE_MS = 15000;
+    const SNAPSHOT_RETRY_MS = 3000;
+    let summaryRetry = null;
+
+    function retrySummarySoon() {
+      clearTimeout(summaryRetry);
+      summaryRetry = setTimeout(loadSummary, SNAPSHOT_RETRY_MS);
+    }
+
     async function loadSummary() {
       const cards = document.getElementById("cards");
       const disc = document.getElementById("disclaimer");
@@ -261,6 +281,12 @@
       const wanted = currentWindow;
       try {
         const res = await fetch(`/api/summary?window=${wanted}`);
+        if (res.status === 503) {
+          if (seq !== summarySeq) return;
+          cards.replaceChildren(el("div", "muted", "Leyendo los datos del disco… (primer arranque)"));
+          retrySummarySoon();
+          return;
+        }
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         if (seq !== summarySeq) return; // a newer request superseded this one
@@ -268,11 +294,27 @@
 
         const nodes = data.byAgent.map((a) => agentCard(a.agent, a.totals));
         nodes.push(agentCard("Total flota", data.grand, "grand"));
+
+        const age = Date.now() - new Date(data.snapshotAt).getTime();
+        if (age > SNAPSHOT_STALE_MS) {
+          nodes.push(el("div", "muted", `Datos leídos hace ${fmtAge(age)} · actualizando…`));
+          retrySummarySoon();
+        }
         cards.replaceChildren(...nodes);
       } catch (e) {
         if (seq !== summarySeq) return;
         cards.replaceChildren(errEl("No se pudo cargar el resumen: " + e.message));
       }
+    }
+
+    // fmtAge renders a snapshot's age coarsely — the point is "these numbers
+    // predate the window you're looking at", not the exact second.
+    function fmtAge(ms) {
+      const mins = Math.round(ms / 60000);
+      if (mins < 1) return "unos segundos";
+      if (mins < 60) return `${mins} min`;
+      const hours = Math.round(mins / 60);
+      return hours < 24 ? `${hours} h` : `${Math.round(hours / 24)} d`;
     }
 
     // agentCard renders one summary card as a DOM node. Activity-tier agents get

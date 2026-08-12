@@ -8,17 +8,39 @@ After=network-online.target
 # --lan expondria el gasto de toda la flota a la red local; se prende a mano
 # cuando se quiera ver desde el telefono, no de forma permanente.
 #
-# --cache-ttl 60s (default 10s): un escaneo completo cuesta ~6 s de CPU y ~79 MB.
-# Nadie mira el dashboard cada 10 s, y navegando entre vistas el TTL corto
-# dispararia rescans encimados. Los datos son archivos de log: no cambian tan
-# rapido como para justificarlo. Idle NO escanea: el scan es por request.
+# --cache-ttl 60s (default 10s): un escaneo completo YA NO cuesta ~6 s. Medido
+# 2026-08-11 sobre ~770 MB de historial: claudecode 29.5 s (482 MB / 1001 JSONL),
+# cursor 14.5 s (201 MB / 263 store.db), openclaw 3.3 s -> ~48 s en frio, ~14 s
+# con page cache caliente, y encima con CPUQuota=50%. Nadie mira el dashboard
+# cada 10 s, y navegando entre vistas el TTL corto dispararia rescans encimados.
+#
+# Ese costo es justo el que rompio el dashboard (T127/F1): mientras el scan
+# corria DENTRO del handler, pasaba del WriteTimeout de 30 s y la respuesta se
+# perdia entera -> la flota se veia en cero. Desde el fix ninguna request espera
+# un scan: se sirve el snapshot en mano y el rescan corre atras. El proceso
+# escanea una vez al arrancar (prime) y despues solo cuando entra una request
+# con el TTL vencido: idle sigue sin escanear.
 ExecStart=%h/.local/bin/llm-agent-spend-manager serve --port 4600 --cache-ttl 60s
 Restart=always
 RestartSec=2
 
-# 79 MB medidos de pico en un escaneo de todo el historial -> 256M es ~3x de
-# margen y sigue siendo un techo real: esta maquina la comparten varios agentes
-# y ya ha habido OOM kills por no ponerlos.
+# Un escaneo retiene ~56 MB de heap vivo pero *asigna* ~3.7 GB en el camino
+# (medido 2026-08-11). Sin techo propio, el runtime de Go deja crecer el RSS
+# hasta el limite duro del cgroup y ahi se queda: el 2026-08-11 el servicio
+# estaba clavado en 253.5M/256M con 2.4M libres, y en ese estado cada refresco
+# en segundo plano entra en reclaim directo y no avanza -> el snapshot se
+# congela y "hoy" vuelve a leerse en cero al cruzar la medianoche.
+#
+# GOMEMLIMIT le pone al runtime un techo SUAVE por debajo del duro: colecta y
+# devuelve memoria antes de chocar, cambiando algo de CPU por no atorarse.
+# 200 MiB deja ~56 MB para stacks, binario y runtime bajo el MemoryMax de 256M.
+# No relaja ningun limite: los de abajo siguen igual.
+Environment=GOMEMLIMIT=200MiB
+
+# 87 MB medidos de pico real (RSS) en un escaneo de todo el historial; la cifra
+# vieja de 79 MB era de un corpus mucho mas chico. 256M sigue siendo un techo
+# real: esta maquina la comparten varios agentes y ya ha habido OOM kills por
+# no ponerlos.
 MemoryMax=256M
 CPUQuota=50%
 

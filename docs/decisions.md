@@ -304,3 +304,178 @@ equivocada. La forma correcta de esa ruta sería alimentar el ancla desde la mis
   espera igual.
 
 Refs: T139.
+
+---
+
+## ADR-13b — El ancla real se midió y **no** se implementa: la reconstrucción no es lo bastante exacta para mover el borde del tope
+
+**Contexto.** ADR-13 dejó abierto el ticket siguiente con estas palabras: *"Si esa desalineación
+estorba en la práctica, el ticket siguiente es el ancla real, no este."* Estorbó dos veces (el
+rechazo del 2026-08-06 con la pantalla de Anthropic en "58% used, resets in 1h34min", y la subida
+del tope propio de 120M a 145M tokens/5 h que le siguió como parche de síntoma). A7 fue ese
+ticket: anclar el bucket de `internal/enforce` a la fase que ya reconstruye
+`internal/quota.SessionWindows`, en vez de a la época.
+
+**Qué se midió (2026-08-10, esta máquina, sin instrumentación nueva).** Se releyó el histórico con
+`aggregate.CollectSnapshot` + `quota.SessionWindows` —la misma reconstrucción que consume
+`internal/sessionreset`— y se reprodujo minuto a minuto el tope que de verdad corre en 4610
+(`--cap 145000000 --window 5h --unit tokens --key fleet`): 50,650 turnos de Anthropic,
+102 ventanas reales, del 2026-06-06 al 2026-08-10, 92,937 minutos evaluados, 30,600 de ellos con
+una ventana real viva.
+
+**Lo que salió.**
+
+1. **La desalineación es grande, no de minutos.** Distancia de la fase real a la rejilla de época,
+   `min(phi, 5h-phi)`, por ventana: mínimo 40 s, **mediana 1 h 26 min**, media 1 h 22 min,
+   p90 2 h 18 min, máximo 2 h 29 min.
+2. **Y sí cae donde hay tráfico.** Con el anclaje de hoy hay **1,621 minutos** en que el proxy
+   rechaza mientras la ventana real todavía tiene margen bajo el tope — **1,442 de ellos con
+   tráfico real a ±30 min** —, repartidos en **21 de las 102 ventanas**, con una racha continua de
+   hasta **3 h 41 min**. O sea: el gate del Paso 0 ("si es angosto y rara vez pega, para ahí") **no
+   aplica**. El problema es real y del tamaño que ADR-13 sospechaba.
+3. **Pero mover el borde manteniendo la ventana deslizante empeora justo eso.** Anclar la rejilla
+   de dos cubetas a la fase real y dejar el resto igual sube el rechazo indebido de 1,621 a
+   **2,198 minutos** (1,949 con tráfico): **36% peor que hoy**. La razón es estructural: el
+   `previous` entero se cobra con peso máximo en el instante en que arranca la cubeta, y anclar a
+   la fase real pone ese instante exactamente donde el proveedor refila. El anclaje a la época, al
+   ser una fase arbitraria, al menos reparte ese error a una hora cualquiera.
+4. **Lo que sí funciona es dejar de ser deslizante.** Una ventana **fija** anclada a la fase real
+   da 0 minutos de rechazo indebido y 0 de paso indebido: se vuelve, exactamente, la contabilidad
+   del proveedor. La objeción de ADR-08 ("una fija deja pasar ~2× en la frontera") se disuelve
+   cuando la frontera *es* la del proveedor, porque las dos mitades caen en dos ventanas distintas
+   del plan.
+5. **Y ahí es donde se cae.** Esa perfección depende por completo de que el ancla esté bien, y el
+   error propio de la reconstrucción está medido contra 5 agotamientos reales (ADR-05): 6 s,
+   1.1 min, 3.8 min, 7.8 min y **45.7 min**. Reproduciendo el mismo histórico con el ancla movida
+   por cada uno de esos errores:
+   - hasta 7.8 min, la ventana fija en fase real conserva casi toda la ganancia (de 0 a 103
+     minutos de rechazo indebido contra los 1,621 de hoy), pero ya deja llegar una ventana real a
+     163–191M tokens;
+   - con el error de **45.7 min** —1 de las 5 observaciones— **todas** las variantes ancladas a la
+     fase real dejan que una sola ventana real del proveedor llegue a **371.8M** (ancla tarde) o
+     **385.6M** (ancla temprano) tokens, durante 1,406–1,648 minutos del replay. Hoy, con época,
+     el peor caso del mismo histórico es 218.8M.
+
+   Para dimensionarlo: el techo calibrado de esta cuenta es 186.1M tokens (rango 91.0–213.5M,
+   dispersión ±29%). **371.8M es 1.74× la cota más alta que esta cuenta ha mostrado jamás**, o sea
+   agotamiento a media tarea garantizado. 218.8M apenas la roza.
+
+6. **Ninguna variante intermedia lo salva, y no por falta de intentos.** Se probaron tres formas de
+   conservar un carry de guarda sobre la ventana fija en fase real (carry de la cola de la ventana
+   anterior; carry entero decaído en 8 min, 46 min y 90 min). Todas se comportan igual con el error
+   de 45.7 min: 371.8M. Es aritmética, no ajuste de parámetro — un carry más corto que la ventana
+   no cubre un ancla equivocada por 46 min, y un carry tan largo como la ventana **es** el caso 3,
+   que ya es peor que hoy. Cualquier estimador que rechace menos que el de hoy tiene que reportar
+   menos que el de hoy en algún instante; donde el ancla está a ~46 min de su sitio, esos instantes
+   caen dentro de una ventana real que ya iba muy por encima del tope.
+
+7. **El error no es detectable desde adentro.** `SessionWindows` abre la ventana en el primer turno
+   con huella local; un turno que abrió la ventana real sin dejar huella aquí (otro dispositivo, la
+   app web o móvil de la misma cuenta) recorre el ancla hacia adelante, y nada local distingue ese
+   caso de uno exacto. ADR-05 ya lo dice: cada ventana es **una observación con error**, no un
+   hecho. No hay señal de confianza por ventana que permita usar el ancla solo cuando es buena.
+
+**Decisión.** **No se toca `internal/enforce`.** El tope sigue anclado a la época, con la ventana
+deslizante de dos cubetas de ADR-08. El ancla real queda descartada mientras la única fuente de
+fase sea esta reconstrucción.
+
+**Por qué.** El intercambio que ofrece el ancla real es: cambiar ~1,442 minutos cada dos meses de
+rechazo molesto —acotado, auto-limitado y desde T139 **explicado con su ETA verdadero**— por la
+posibilidad de autorizar un tope completo y fresco dentro de una ventana real que ya iba en 2.5×,
+una vez de cada cinco. Eso es exactamente el fallo que el tope existe para prevenir (ADR-08), y la
+asimetría de ADR-05 apunta al mismo lado: **un agente que se para a media tarea cuesta más que uno
+que termina con cuota de sobra**. Rechazar de más es caro; agotar el plan a media tarea es el modo
+de fallo contra el que se construyó todo esto.
+
+Dicho de otro modo: `internal/sessionreset` puede **tolerar** el error de la reconstrucción porque
+lo peor que produce es una frase con la hora equivocada, y ADR-13 ya obliga a decir cuándo no se
+sabe. Un borde de tope no tolera ese mismo error, porque lo que produce es que la flota se pase.
+Es el mismo dato alimentando dos consumidores con tolerancias distintas, y solo uno de los dos
+puede permitírselo.
+
+**Consecuencias.**
+- El primer punto de las consecuencias de ADR-13 **sigue vigente tal cual**: el tope corta en fase
+  de época y puede rechazar con quota real disponible. Ahora está cuantificado: ~1,442 minutos con
+  tráfico cada ~2 meses, en 21 de 102 ventanas, rachas de hasta 3 h 41 min.
+- El parche de síntoma que sí funciona es el que ya se aplicó: **headroom**. El tope de 145M vive
+  por debajo del techo calibrado de 186.1M precisamente para absorber el sobreconteo que el
+  desfase de fase produce. Es config, no código.
+- Lo que reabriría esta decisión es **una fuente de fase con menos error**, no otra forma de
+  acomodar la que hay: un dato de frontera publicado por el proveedor, o una calibración que baje
+  el error del ancla a la escala de los minutos de forma verificable por ventana. Si eso aparece,
+  la ventana fija anclada a la fase real es la implementación correcta y esta adenda dice por qué
+  — no hace falta volver a medirlo desde cero.
+- No se agregó instrumentación: la medición se hizo con `aggregate` + `quota.SessionWindows`, en un
+  programa desechable que no quedó en el repo.
+
+Refs: T139, A7. Revierte el "el ticket siguiente es el ancla real" de ADR-13 con los datos que ese
+mismo ADR pedía para decidirlo.
+
+## ADR-14 — El dashboard responde con el snapshot que tiene y reescanea por detrás; ninguna request espera un escaneo
+
+**Contexto.** El dashboard se abría en cero. No era un problema de datos: `/api/summary?window=all`
+mostraba 2,821M de tokens y las tres fuentes escribían normal. El 2026-08-11, con el servicio
+corriendo, la reproducción fue exacta:
+
+```
+warm: code=200 size=3106 time=0.015s     # cache caliente
+cold: code=000 size=0    time=60.7s      # curl exit 52 — "Empty reply from server"
+```
+
+La causa: `cachedLoad` corría el escaneo completo **dentro del handler HTTP**. Ese escaneo son
+~770 MB (482 MB en 1001 JSONL de Claude Code, 201 MB en 263 `store.db` de Cursor, 88 MB de
+OpenClaw): 43 s en frío, ~15 s con page cache caliente, y bajo `CPUQuota=50%` más. El
+`WriteTimeout` del server es de 30 s, y **no interrumpe al handler**: el escaneo termina igual, y
+al ir a escribir la respuesta el deadline ya venció, así que la conexión se cierra **sin un solo
+byte**. El navegador ve un fetch fallido y cada panel cae a su estado vacío.
+
+Eso explica por qué el fix de T100 se verificó bien y una semana después el síntoma volvió: no se
+rompió nada, el corpus creció y cruzó los 30 s. También por qué se veía intermitente — dos curls
+seguidos dentro del TTL: el segundo pega en cache y funciona.
+
+**Decisión.** El escaneo sale de la ruta de la request:
+- **stale-while-revalidate** — si hay snapshot en mano se sirve YA y el rescan corre en segundo
+  plano. Una request nunca vuelve a esperar un escaneo.
+- **prime al arrancar** — `Serve` escanea antes de escuchar, así el servicio permanente paga el
+  costo en frío una vez y no se lo cobra a quien abra el dashboard primero.
+- **warm-up acotado** — el único caso sin nada que servir (los segundos entre arrancar y terminar
+  el primer escaneo) responde **503 + Retry-After** en 5 s, no una conexión colgada que muere.
+- **un rescan que falla no borra el snapshot bueno** — leer SQLite de agentes que están
+  escribiendo falla de vez en cuando, y contestar eso con una página de error convierte un parpadeo
+  en "la flota no hizo nada".
+
+**Por qué no las otras.** Subir el `WriteTimeout` deja al usuario esperando 60 s frente a una
+pantalla en blanco y vuelve a romperse cuando el corpus crezca otro tanto: mueve el borde, no lo
+quita. Escanear en un ticker fijo mantiene el dato fresco pero deja la máquina —compartida— con un
+escaneo permanente de fondo; con SWR, en idle no se escanea nada. Hacer el escaneo incremental
+(índice por mtime) es la respuesta de fondo al costo y sigue pendiente: esta decisión hace que ese
+costo ya no produzca números equivocados, no que desaparezca.
+
+**Un dato viejo no se presenta como fresco.** Servir stale tiene un filo propio, y es justo el
+mismo síntoma: un snapshot leído ayer, filtrado a la ventana "hoy", suma **cero** — que se lee como
+"la flota no hizo nada hoy" y no como "estos números son de ayer". Por eso la respuesta ahora lleva
+`snapshotAt` (y el header `X-Snapshot-At`) separado de `generatedAt`, y el dashboard, cuando el
+snapshot está viejo, lo dice y vuelve a pedir en vez de dejar el cero en pantalla. Es ADR-07 en la
+ruta de lectura: si el número no se puede dar fresco, se dice.
+
+**GOMEMLIMIT, que era la mitad que faltaba.** Con el fix ya puesto, los refrescos en segundo plano
+**no avanzaban**: el snapshot quedaba congelado. El servicio estaba clavado en **253.5M / 256M con
+2.4M libres**. Un escaneo retiene ~56 MB de heap vivo pero asigna ~3.7 GB en el camino, y sin techo
+propio el runtime de Go deja crecer el RSS hasta el límite duro del cgroup; ahí cada asignación
+entra en reclaim directo y el escaneo no progresa. `Environment=GOMEMLIMIT=200MiB` le pone un techo
+**suave** por debajo del duro. No se relajó ningún límite: `MemoryMax=256M`, `CPUQuota=50%`,
+`ProtectHome=read-only` y el resto del endurecimiento quedan igual. Verificado en vivo: el snapshot
+avanza cada ciclo (20:52:59 → 20:54:32 → 20:56:22 → 20:58:13), los turnos suben con actividad real
+(2454 → 2459 → 2474) y la memoria se estaciona en 120–135 MB.
+
+**Consecuencias.**
+- El `--cache-ttl` ya no decide si una request espera, solo cuándo se dispara el refresco.
+- El dashboard puede mostrar datos de hace un rato; lo dice, y se actualiza solo.
+- Queda pendiente el costo real del escaneo (43 s en frío y creciendo con el corpus). Mientras
+  `snapshotAt` se vea al día, es deuda de eficiencia; si el escaneo llegara a durar más que el TTL
+  de forma sostenida, el dato empieza a atrasarse y ahí sí toca el índice incremental.
+- El comentario de la unidad decía "~6 s de CPU y ~79 MB". Estaba desactualizado por un factor de
+  7 y nadie lo notó porque nada lo verifica; quedó corregido con las cifras medidas.
+
+Refs: T127/F1, T126, T100. La sospecha de T100 (sidecars `-shm`/`-wal` borrándose bajo
+`ProtectHome=read-only`) queda **descartada**: los datos siempre estuvieron ahí y se leían bien.

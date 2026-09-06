@@ -486,19 +486,21 @@ No todo está en todas las superficies, y conviene saberlo antes de buscarlo:
 | Sección | Terminal | `--json` | HTTP | Dashboard |
 |---|:--:|:--:|:--:|:--:|
 | Totales por agente y por modo | `status` | ✅ | `/api/summary`, `/api/daily` | ✅ |
-| Ventana de cuota, ritmo y pronóstico | `quota` | ✅ | ❌ | ❌ |
-| Quién se come la cuota y qué palanca la estira | `quota` | ✅ | ❌ | ❌ |
+| Ventana de cuota, ritmo y pronóstico | `quota` | ✅ | `/api/quota` | ✅ |
+| Quién se come la cuota y qué palanca la estira | `quota` | ✅ | `/api/quota` | ✅ |
 | Buckets facturables y tendencia | `advise` | ✅ | `/api/advice` | ✅ |
-| Tareas más caras | `advise` | ✅ (`topTasks`) | `/api/advice` | ❌ |
+| Tareas más caras | `advise` | ✅ (`topTasks`) | `/api/advice` | ✅ |
 | Contexto pasado del punto de no-retorno | `advise` | ✅ | `/api/advice` | ✅ |
 | Hallazgos y brechas de arquitectura | `advise` | ✅ | `/api/advice` | ✅ |
-| Forma de la carga y plan por ruta | `advise` | ✅ (`workloads`) | `/api/advice` | ❌ |
-| Bitácora de resultado | `outcome` | ✅ | ❌ | ❌ |
+| Forma de la carga y plan por ruta | `advise` | ✅ (`workloads`) | `/api/advice` | ✅ |
+| Bitácora de resultado | `outcome` | ✅ | `/api/outcome` | ✅ |
 
 ```bash
 ./llm-agent-spend-manager advise  --window all --json   # para que lo consuma otro agente
 ./llm-agent-spend-manager outcome --window all --json
 curl localhost:4600/api/advice                          # y por HTTP, igual que el resto de la API
+curl localhost:4600/api/quota                           # ventana de cuota, ritmo, quién se la come
+curl localhost:4600/api/outcome                         # bitácora: cambios reales vs métrica
 ```
 
 ## Lo que NO hace
@@ -509,17 +511,10 @@ Para que el estado no se lea inflado:
   mismos records → mismo reporte, sin estado guardado entre corridas. La bitácora de resultado es
   precisamente el **prerrequisito** de cualquier modelo futuro — es la que produciría el dataset
   `(cambio, métrica antes, métrica después)` — no un sustituto de uno.
-- **`outcome` no tiene ruta HTTP ni panel en el dashboard.** Es CLI + `--json`. El dashboard hoy
-  renderiza lo que expone `/api/advice`, y `outcome` no pasa por ahí.
-- **`quota` tampoco está en el dashboard, y es a propósito.** El dashboard sigue encabezando con
-  el `$`; pintarle la cuota encima antes de que la unidad estuviera bien habría sido rehacer el
-  panel dos veces. Es CLI + `--json` hasta que se retome el dashboard.
 - **El techo de la cuota de Anthropic no está publicado por nadie.** El que reporta `quota` es un
   **estimado calibrado** con los agotamientos que hayan ocurrido en tu máquina, con su rango y su
   dispersión — es un rango con margen ancho, no una medición. Por debajo de 3 agotamientos
   observados el comando no imprime techo alguno.
-- **La sección de forma de carga y plan por ruta tampoco está en el dashboard.** Sale en la
-  terminal y bajo la llave `workloads` del JSON de `advise`.
 - **Solo E-01 tiene serie diaria.** E-02 y E-07 se definen **por sesión**, y una sesión partida a
   medianoche no da un valor diario honesto: el número sería un artefacto del corte. Se listan
   como `SIN SERIE DIARIA` con su razón en vez de calificarse mal.

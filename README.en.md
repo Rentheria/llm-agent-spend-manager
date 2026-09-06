@@ -478,19 +478,21 @@ Not everything is on every surface, and it's worth knowing before you go looking
 | Section | Terminal | `--json` | HTTP | Dashboard |
 |---|:--:|:--:|:--:|:--:|
 | Per-agent and per-mode totals | `status` | ✅ | `/api/summary`, `/api/daily` | ✅ |
-| Quota window, burn rate and forecast | `quota` | ✅ | ❌ | ❌ |
-| Who eats the quota and which lever stretches it | `quota` | ✅ | ❌ | ❌ |
+| Quota window, burn rate and forecast | `quota` | ✅ | `/api/quota` | ✅ |
+| Who eats the quota and which lever stretches it | `quota` | ✅ | `/api/quota` | ✅ |
 | Billable buckets and trend | `advise` | ✅ | `/api/advice` | ✅ |
-| Most expensive tasks | `advise` | ✅ (`topTasks`) | `/api/advice` | ❌ |
+| Most expensive tasks | `advise` | ✅ (`topTasks`) | `/api/advice` | ✅ |
 | Context past the point of no return | `advise` | ✅ | `/api/advice` | ✅ |
 | Findings and architecture gaps | `advise` | ✅ | `/api/advice` | ✅ |
-| Workload shape and per-route plan | `advise` | ✅ (`workloads`) | `/api/advice` | ❌ |
-| Outcome ledger | `outcome` | ✅ | ❌ | ❌ |
+| Workload shape and per-route plan | `advise` | ✅ (`workloads`) | `/api/advice` | ✅ |
+| Outcome ledger | `outcome` | ✅ | `/api/outcome` | ✅ |
 
 ```bash
 ./llm-agent-spend-manager advise  --window all --json   # for another agent to consume
 ./llm-agent-spend-manager outcome --window all --json
 curl localhost:4600/api/advice                          # and over HTTP, like the rest of the API
+curl localhost:4600/api/quota                           # quota window, burn rate, who's eating it
+curl localhost:4600/api/outcome                         # ledger: real changes vs metric
 ```
 
 ## What it does NOT do
@@ -501,17 +503,10 @@ So the status doesn't read inflated:
   data: same records → same report, no state between runs. The outcome ledger is precisely the
   **prerequisite** for any future model — it's what would produce the `(change, metric before,
   metric after)` dataset — not a substitute for one.
-- **`outcome` has no HTTP route and no dashboard panel.** It's CLI + `--json`. The dashboard today
-  renders what `/api/advice` exposes, and `outcome` doesn't go through it.
-- **`quota` isn't in the dashboard either, on purpose.** The dashboard still leads with the `$`;
-  painting the quota over it before the unit was right would have meant rebuilding the panel
-  twice. CLI + `--json` until the dashboard is picked back up.
 - **Nobody publishes Anthropic's quota ceiling.** The one `quota` reports is a **calibrated
   estimate** from the exhaustions observed on your machine, with its range and its dispersion —
   a wide range, not a measurement. Below 3 observed exhaustions the command prints no ceiling at
   all.
-- **The workload-shape and per-route-plan section isn't in the dashboard either.** It shows up in
-  the terminal and under the `workloads` key of `advise --json`.
 - **Only E-01 has a daily series.** E-02 and E-07 are defined **per session**, and a session split
   at midnight has no honest daily value: the number would be an artifact of the cut. They're
   listed under `SIN SERIE DIARIA` with the reason instead of being graded badly.

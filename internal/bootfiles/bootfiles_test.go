@@ -235,8 +235,8 @@ func TestLoadWatched_DefaultsWatchTheTwoRealBootFiles(t *testing.T) {
 		"/home/tester/.openclaw/workspace/SYNC.md",
 	}
 	for i, want := range wantPaths {
-		if watched[i].Path != want {
-			t.Errorf("archivo %d = %s, se esperaba %s", i, watched[i].Path, want)
+		if filepath.ToSlash(watched[i].Path) != want {
+			t.Errorf("archivo %d = %s, se esperaba %s", i, filepath.ToSlash(watched[i].Path), want)
 		}
 		if watched[i].ThresholdBytes <= 0 {
 			t.Errorf("%s quedó sin umbral positivo: %d", want, watched[i].ThresholdBytes)

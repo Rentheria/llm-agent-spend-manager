@@ -2,6 +2,10 @@
 
 # llm-agent-spend-manager
 
+[![CI](https://github.com/Rentheria/llm-agent-spend-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/Rentheria/llm-agent-spend-manager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Rentheria/llm-agent-spend-manager)](go.mod)
+
 Visibilidad y control de gasto de LLM entre agentes (Claude Code, OpenClaw, Cursor,
 Antigravity, y más) — un solo binario Go, sin dependencias npm, sin servicios de terceros
 obligatorios.
@@ -13,6 +17,25 @@ además de **medir**,
 razona sobre lo medido: sabe cuándo un consejo suyo ya dejó de servir, qué forma tiene cada
 carga de trabajo, y si una métrica cambió de nivel de verdad o si el movimiento cabe en el
 ruido. No es un plan a futuro: `go build` y ya reporta datos reales de tu máquina.
+
+## Instalar en 30 segundos
+
+**Con Go instalado:**
+```bash
+git clone https://github.com/Rentheria/llm-agent-spend-manager.git
+cd llm-agent-spend-manager
+go build -o llm-agent-spend-manager ./cmd/llm-agent-spend-manager
+./llm-agent-spend-manager status
+```
+
+**Binario precompilado:**  
+Una vez que exista la primera release (`v0.0.1`), descarga el binario para tu plataforma desde
+[Releases](https://github.com/Rentheria/llm-agent-spend-manager/releases) y ejecútalo
+directamente. Ver sección **Lanzar primera versión** al final.
+
+## Screenshots y demos
+
+**Pendiente:** se agregarán capturas de pantalla y grabaciones de demostración en futuras iteraciones.
 
 ## La regla de la casa: no se inventa ningún número
 
@@ -148,7 +171,8 @@ Flags de `serve`:
 > con aviso de deprecación, para no romper invocaciones viejas.
 
 El dashboard es instalable como PWA desde el navegador del celular. Hay un wrapper de
-escritorio (Tauri) en [`desktop/`](desktop/).
+escritorio (Tauri) en [`desktop/`](desktop/), **actualmente solo como scaffold (no compilado aún)**.
+Para más detalles sobre el estado del desktop, ver [`desktop/README.md`](desktop/README.md).
 
 ## La unidad que sí duele: la ventana de cuota, no el `$`
 
@@ -553,6 +577,23 @@ agente está en [`docs/enforcement-cableado.md`](docs/enforcement-cableado.md).
 Vale la pena leerlo junto con la §2: las brechas de arquitectura que el reporte escala nombran
 exactamente esa clase de fierro — un tope que no dependa de que alguien se acuerde.
 
+## Lanzar primera versión
+
+El proyecto está en **versión `0.0.1-dev`** (tanto CLI como desktop). Para crear la primera
+release oficial:
+
+1. **Actualizar versión**: cambiar `version = "0.0.1-dev"` a `version = "0.0.1"` en:
+   - `cmd/llm-agent-spend-manager/main.go`
+   - `desktop/src-tauri/Cargo.toml`
+2. **Commit y push**: `git commit -m "release: v0.0.1"` y push a `main` (o `dev` primero, luego merge).
+3. **Crear tag**: `git tag v0.0.1 && git push origin v0.0.1`
+4. **CI automático**: el workflow [`.github/workflows/release.yml`](.github/workflows/release.yml)
+   detecta el tag `v*` y construye binarios para 6 plataformas (linux/darwin/windows × amd64/arm64).
+5. **Verificar**: los binarios aparecen en
+   [github.com/Rentheria/llm-agent-spend-manager/releases](https://github.com/Rentheria/llm-agent-spend-manager/releases).
+
+**No crear el tag desde este PR** — primero mergear a `dev`, validar, y luego decidir el momento del release.
+
 ## Desarrollo
 
 ```bash
@@ -561,7 +602,7 @@ go vet ./...
 go test -p 1 ./...    # -p 1: un proceso de test a la vez (máquina compartida)
 ```
 
-Requiere **Go 1.26.5+** (es lo que fija `go.mod`, y lo que usa el CI). El mínimo subió de 1.25
+Requiere **Go 1.26.6+** (es lo que fija `go.mod`, y lo que usa el CI). El mínimo subió de 1.25
 por seguridad: el stdlib de Go anterior traía vulnerabilidades alcanzables desde este binario.
 Binario único, sin dependencias npm ni servicios de terceros obligatorios.
 

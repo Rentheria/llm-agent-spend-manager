@@ -125,9 +125,14 @@ func TestFindRepos_SkipsWorktreesAndDescendsOneLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findRepos failed: %v", err)
 	}
+	// Normalize to forward slashes for cross-platform comparison
+	normalized := make([]string, len(repos))
+	for i, repo := range repos {
+		normalized[i] = filepath.ToSlash(repo)
+	}
 	want := []string{"MiProducto/backend", "MiProducto/frontend", "spend-manager"}
-	if strings.Join(repos, ",") != strings.Join(want, ",") {
-		t.Errorf("repos = %v, want %v", repos, want)
+	if strings.Join(normalized, ",") != strings.Join(want, ",") {
+		t.Errorf("repos = %v, want %v", normalized, want)
 	}
 }
 

@@ -58,7 +58,7 @@ func TestSnapshotPath_LivesInTheSameStateDirAsTheRest(t *testing.T) {
 	// El contador de enforcement ya guarda su estado ahí. Un solo lugar donde
 	// mirar "qué persiste esta herramienta" en vez de dos.
 	want := "/home/tester/.local/state/llm-agent-spend-manager/bootfiles.json"
-	if got := SnapshotPath("/home/tester"); got != want {
+	if got := filepath.ToSlash(SnapshotPath("/home/tester")); got != want {
 		t.Errorf("SnapshotPath = %s, se esperaba %s", got, want)
 	}
 }

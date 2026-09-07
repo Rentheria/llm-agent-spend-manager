@@ -1,6 +1,6 @@
 [package]
 name = "llm-agent-spend-manager-desktop"
-version = "0.0.1"
+version = "0.0.1-dev"
 description = "Desktop wrapper around the llm-agent-spend-manager dashboard"
 authors = ["Rentheria"]
 edition = "2021"

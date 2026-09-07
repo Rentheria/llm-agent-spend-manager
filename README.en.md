@@ -2,6 +2,10 @@
 
 # llm-agent-spend-manager
 
+[![CI](https://github.com/Rentheria/llm-agent-spend-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/Rentheria/llm-agent-spend-manager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Rentheria/llm-agent-spend-manager)](go.mod)
+
 Cross-agent LLM spend visibility and control (Claude Code, OpenClaw, Cursor,
 Antigravity, and more) — a single Go binary, no npm dependencies, no mandatory
 third-party services.
@@ -13,6 +17,25 @@ beyond **measuring**, it
 reasons about what it measured: it knows when its own advice has stopped working, what shape
 each workload has, and whether a metric really changed level or the movement fits inside the
 noise. This is not a roadmap: `go build` and it already reports real data from your machine.
+
+## Install in 30 seconds
+
+**With Go installed:**
+```bash
+git clone https://github.com/Rentheria/llm-agent-spend-manager.git
+cd llm-agent-spend-manager
+go build -o llm-agent-spend-manager ./cmd/llm-agent-spend-manager
+./llm-agent-spend-manager status
+```
+
+**Prebuilt binary:**  
+Once the first release (`v0.0.1`) exists, download the binary for your platform from
+[Releases](https://github.com/Rentheria/llm-agent-spend-manager/releases) and run it
+directly. See **Releasing v0.0.1** section below.
+
+## Screenshots and demos
+
+**Pending:** screenshots and demo recordings will be added in future iterations.
 
 ## The house rule: no number is invented
 
@@ -150,7 +173,8 @@ pass via `--token` stays in the process `argv`, where any user on the machine ca
 > that prints a deprecation notice, so old invocations keep working.
 
 The dashboard is installable as a PWA from a phone browser. There is a desktop wrapper
-(Tauri) under [`desktop/`](desktop/).
+(Tauri) under [`desktop/`](desktop/), **currently as scaffold only (not built yet)**.
+For details on the desktop status, see [`desktop/README.md`](desktop/README.md).
 
 ## The unit that actually hurts: the quota window, not the `$`
 
@@ -544,6 +568,23 @@ network. How to point each agent at it is in
 
 Worth reading alongside §2: the architecture gaps the report escalates name exactly that class of
 mechanism — a cap that doesn't depend on anyone remembering.
+
+## Releasing v0.0.1
+
+The project is at **version `0.0.1-dev`** (both CLI and desktop). To create the first official
+release:
+
+1. **Update version**: change `version = "0.0.1-dev"` to `version = "0.0.1"` in:
+   - `cmd/llm-agent-spend-manager/main.go`
+   - `desktop/src-tauri/Cargo.toml`
+2. **Commit and push**: `git commit -m "release: v0.0.1"` and push to `main` (or `dev` first, then merge).
+3. **Create tag**: `git tag v0.0.1 && git push origin v0.0.1`
+4. **Automatic CI**: the [`.github/workflows/release.yml`](.github/workflows/release.yml) workflow
+   detects the `v*` tag and builds binaries for 6 platforms (linux/darwin/windows × amd64/arm64).
+5. **Verify**: binaries appear at
+   [github.com/Rentheria/llm-agent-spend-manager/releases](https://github.com/Rentheria/llm-agent-spend-manager/releases).
+
+**Do not create the tag from this PR** — first merge to `dev`, validate, then decide when to release.
 
 ## Development
 

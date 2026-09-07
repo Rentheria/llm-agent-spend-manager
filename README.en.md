@@ -594,7 +594,7 @@ go vet ./...
 go test -p 1 ./...    # -p 1: one test process at a time (shared machine)
 ```
 
-Requires **Go 1.26.5+** (what `go.mod` pins, and what CI uses). The minimum moved up from 1.25
+Requires **Go 1.26.6+** (what `go.mod` pins, and what CI uses). The minimum moved up from 1.25
 for security: the older Go stdlib shipped vulnerabilities reachable from this binary.
 Single binary, no npm dependencies, no mandatory third-party services.
 

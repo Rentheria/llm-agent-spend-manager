@@ -602,7 +602,7 @@ go vet ./...
 go test -p 1 ./...    # -p 1: un proceso de test a la vez (máquina compartida)
 ```
 
-Requiere **Go 1.26.5+** (es lo que fija `go.mod`, y lo que usa el CI). El mínimo subió de 1.25
+Requiere **Go 1.26.6+** (es lo que fija `go.mod`, y lo que usa el CI). El mínimo subió de 1.25
 por seguridad: el stdlib de Go anterior traía vulnerabilidades alcanzables desde este binario.
 Binario único, sin dependencias npm ni servicios de terceros obligatorios.
 

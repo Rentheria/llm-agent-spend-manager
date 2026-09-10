@@ -18,8 +18,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/Rentheria/llm-agent-spend-manager/internal/enforce"
+	"github.com/Rentheria/llm-agent-spend-manager/internal/lru"
 )
 
 // KeyFunc picks the counter key for a request. The whole cap is combined when
@@ -100,13 +102,14 @@ type ResetNote func() string
 
 // Proxy forwards to a fixed upstream base URL and enforces a combined cap.
 type Proxy struct {
-	limiter    *enforce.Limiter
-	rp         *httputil.ReverseProxy
-	keyFn      KeyFunc
-	amount     AmountFunc
-	countUsage bool
-	target     *url.URL
-	resetNote  ResetNote
+	limiter      *enforce.Limiter
+	rp           *httputil.ReverseProxy
+	keyFn        KeyFunc
+	amount       AmountFunc
+	countUsage   bool
+	target       *url.URL
+	resetNote    ResetNote
+	requestCache *lru.RequestCache
 }
 
 // Option customizes a Proxy.
@@ -147,6 +150,17 @@ func WithResetNote(fn ResetNote) Option { return func(p *Proxy) { p.resetNote = 
 // logger instead of the standard one (whose stderr is what
 // `journalctl --user -u lasm-proxy` shows in production).
 func WithErrorLog(l *log.Logger) Option { return func(p *Proxy) { p.rp.ErrorLog = l } }
+
+// WithRequestCache enables LRU caching of recent request metadata. When set,
+// the proxy records metadata about each forwarded request (timestamp, key, etc.)
+// in an in-memory LRU cache for fast lookup. Useful for request deduplication,
+// rate limiting analysis, or debugging recent traffic patterns.
+//
+// The cache capacity is configured via the LASM_LRU_CAPACITY environment variable
+// (default 1000). Pass nil to disable request caching (the default).
+func WithRequestCache(cache *lru.RequestCache) Option {
+	return func(p *Proxy) { p.requestCache = cache }
+}
 
 // New builds a Proxy forwarding to target (e.g. https://api.anthropic.com) and
 // enforcing limiter's cap. Returns an error if target is not a valid absolute
@@ -241,6 +255,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, p.capReachedMessage(d), http.StatusTooManyRequests)
 		return
 	}
+
+	// Record request metadata in the LRU cache if enabled
+	if p.requestCache != nil {
+		p.recordRequest(key, r)
+	}
+
 	p.forward(w, r, diag)
 }
 
@@ -265,4 +285,19 @@ func setCapHeaders(h http.Header, d enforce.Decision) {
 	h.Set("X-Cap-Limit", strconv.FormatInt(d.Limit, 10))
 	h.Set("X-Cap-Current", strconv.FormatInt(d.Current, 10))
 	h.Set("X-Cap-Remaining", strconv.FormatInt(d.Remaining, 10))
+}
+
+// recordRequest stores metadata about this request in the LRU cache.
+// Caller has already verified requestCache is non-nil.
+func (p *Proxy) recordRequest(key string, r *http.Request) {
+	info := lru.RequestInfo{
+		Key:       key,
+		Timestamp: time.Now(),
+		Agent:     r.Header.Get("X-Agent"),
+	}
+	// Extract model if available from request headers or path
+	if model := r.Header.Get("X-Model"); model != "" {
+		info.Model = model
+	}
+	p.requestCache.Record(info)
 }

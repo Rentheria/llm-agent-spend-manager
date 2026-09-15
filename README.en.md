@@ -604,3 +604,7 @@ when ready — never commit directly to `main`. See [`CONTRIBUTING.md`](CONTRIBU
 **Next candidate (not urgent):** an adapter for OpenAI's **Codex CLI**. It stores local
 JSONL logs with real tokens per turn just like Claude Code, so it would be a **measured** tier
 with no estimation.
+
+## See also
+
+[agent-context-atlas](https://github.com/Rentheria/agent-context-atlas) complements this project — context/docs vs spend visibility; same “don’t invent numbers” ethic.

@@ -612,3 +612,7 @@ cuando está listo — nunca se commitea directo a `main`. Ver [`CONTRIBUTING.md
 **Próximo candidato (no urgente):** adaptador para **Codex CLI** de OpenAI. Guarda logs
 locales JSONL con tokens reales por turno igual que Claude Code, así que sería tier **medido**
 sin estimación.
+
+## Ver también
+
+[agent-context-atlas](https://github.com/Rentheria/agent-context-atlas) complementa este proyecto: contexto/docs frente a visibilidad de gasto; la misma ética de «no se inventa ningún número».

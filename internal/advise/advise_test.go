@@ -257,3 +257,35 @@ func TestHumanInt_GroupsThousands(t *testing.T) {
 		}
 	}
 }
+
+// Cursor emits one estimated record per conversation, so every conversation
+// looks like a one-turn session. Counting them pushed E-03 over its floor on
+// weeks where the measured churn was below it: here 1 of 4 measured sessions
+// is short (25% < 30%), and five Cursor conversations would make it 6 of 9.
+func TestAnalyze_DoesNotCountActivityConversationsAsShortSessions(t *testing.T) {
+	records := []aggregate.Record{measuredTurn("one-shot", 20, [4]int{100, 50, 100_000, 0})}
+	for _, measured := range []string{"long-1", "long-2", "long-3"} {
+		for i := 0; i < 5; i++ {
+			records = append(records, measuredTurn(measured, 20, [4]int{100, 50, 1000, 50_000}))
+		}
+	}
+	for _, conversation := range []string{"conv-1", "conv-2", "conv-3", "conv-4", "conv-5"} {
+		records = append(records, aggregate.Record{
+			Agent:      aggregate.AgentCursor,
+			Mode:       aggregate.ModeEditor,
+			Confidence: aggregate.ConfidenceActivity,
+			SessionID:  conversation,
+			Timestamp:  time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC),
+			TokensLow:  1000,
+			TokensHigh: 3000,
+			CostUSD:    0.05,
+			CostKnown:  true,
+		})
+	}
+
+	report := Analyze(records, string(aggregate.WindowAll), time.UTC)
+
+	if f, ok := findingByID(report, FindingSessionChurn); ok {
+		t.Errorf("did not expect %s: only 1 of 4 measured sessions is short; got %q", FindingSessionChurn, f.Title)
+	}
+}

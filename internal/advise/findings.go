@@ -174,7 +174,8 @@ func cacheWastedFinding(_ []aggregate.Record, sessions []session, report Report)
 // amortizing the prompt prefix they had to ingest. The savings figure is an upper
 // bound: it assumes that work could have ridden an existing session, which isn't
 // always true (a cron run legitimately starts fresh).
-func sessionChurnFinding(_ []aggregate.Record, sessions []session, report Report) (Finding, bool) {
+func sessionChurnFinding(_ []aggregate.Record, allSessions []session, report Report) (Finding, bool) {
+	sessions := measuredSessions(allSessions)
 	if len(sessions) == 0 {
 		return Finding{}, false
 	}
@@ -206,6 +207,21 @@ func sessionChurnFinding(_ []aggregate.Record, sessions []session, report Report
 		MetricName: MetricShortSessionShare,
 		Metric:     share,
 	}, true
+}
+
+// measuredSessions drops the activity-tier sessions. Cursor and Antigravity
+// emit ONE estimated record per conversation, so their turn count is always 1
+// whatever the conversation really did: counting them as short sessions reports
+// churn nobody measured (2026-10-02: 7 of the week's 11 "short" sessions).
+func measuredSessions(sessions []session) []session {
+	measured := make([]session, 0, len(sessions))
+	for _, s := range sessions {
+		if len(s.turns) > 0 && s.turns[0].Confidence == aggregate.ConfidenceActivity {
+			continue
+		}
+		measured = append(measured, s)
+	}
+	return measured
 }
 
 // cronOverheadFinding flags scheduled work that costs a meaningful slice of the

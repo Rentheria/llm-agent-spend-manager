@@ -58,6 +58,7 @@ type Entry struct {
 type transcriptLine struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
+	RequestID string    `json:"requestId"`
 	AgentID   string    `json:"agentId"`
 	CWD       string    `json:"cwd"`
 	Timestamp time.Time `json:"timestamp"`
@@ -67,6 +68,7 @@ type transcriptLine struct {
 	IsAPIErrorMessage bool   `json:"isApiErrorMessage"`
 	Error             string `json:"error"`
 	Message           struct {
+		ID    string `json:"id"`
 		Model string `json:"model"`
 		// Content is raw because Claude Code writes it either as a plain string
 		// or as an array of typed blocks; sessionLabel handles both.
@@ -151,6 +153,7 @@ func collectFromFile(path string) (Snapshot, error) {
 
 	var snapshot Snapshot
 	var label, cwd string
+	turnIndexByCall := map[string]int{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // transcripts can have long lines (thinking blocks)
 
@@ -181,7 +184,7 @@ func collectFromFile(path string) (Snapshot, error) {
 			continue
 		}
 
-		snapshot.Turns = append(snapshot.Turns, Entry{
+		turn := Entry{
 			SessionID:                line.SessionID,
 			SessionLabel:             label,
 			CWD:                      cwd,
@@ -192,10 +195,39 @@ func collectFromFile(path string) (Snapshot, error) {
 			OutputTokens:             line.Message.Usage.OutputTokens,
 			CacheCreationInputTokens: line.Message.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     line.Message.Usage.CacheReadInputTokens,
-		})
+		}
+		snapshot.Turns = appendOrMergeTurn(snapshot.Turns, turnIndexByCall, apiCallKey(line), turn)
 	}
 
 	return snapshot, scanner.Err()
+}
+
+// apiCallKey identifies the API call behind an assistant line. Claude Code writes
+// one line per content block (thinking, text, tool_use) of the same response, and
+// every one of them repeats that response's full usage — measured 2026-10-02:
+// 28.8% of the usage lines on this machine were such repeats, and cache-write
+// came out 1.85x the real tokens. Empty when the line carries no id, so it is
+// counted as its own turn rather than merged on a guess.
+func apiCallKey(line transcriptLine) string {
+	if line.Message.ID == "" {
+		return ""
+	}
+	return line.Message.ID + "|" + line.RequestID
+}
+
+// appendOrMergeTurn counts each API call once. Input and cache tokens are the
+// same on every line of a call; output only grows as the blocks stream, so the
+// largest one seen is the call's real output.
+func appendOrMergeTurn(turns []Entry, turnIndexByCall map[string]int, callKey string, turn Entry) []Entry {
+	if callKey == "" {
+		return append(turns, turn)
+	}
+	if index, seen := turnIndexByCall[callKey]; seen {
+		turns[index].OutputTokens = max(turns[index].OutputTokens, turn.OutputTokens)
+		return turns
+	}
+	turnIndexByCall[callKey] = len(turns)
+	return append(turns, turn)
 }
 
 // maxLabelChars keeps a session label short enough to scan in a table. The label

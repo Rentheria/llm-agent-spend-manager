@@ -175,3 +175,40 @@ func TestCollectUsage_MarksTheThreadWhenTheTurnCameFromASubagent(t *testing.T) {
 			byThread["agent-a008eea358b45ba7a"])
 	}
 }
+
+// Claude Code writes one line per content block of a response, each repeating
+// the response's full usage. Counting every line double-counted cache-write
+// (1.85x on this machine, 2026-10-02) and inflated turn counts.
+func TestCollectUsage_CountsAResponseSplitAcrossLinesOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTranscript(t, dir, "session.jsonl",
+		`{"type":"assistant","sessionId":"abc","requestId":"req_1","timestamp":"2026-10-01T17:19:00Z","message":{"id":"msg_1","model":"claude-sonnet-5-5","content":[{"type":"thinking"}],"usage":{"input_tokens":2,"output_tokens":4,"cache_creation_input_tokens":115430,"cache_read_input_tokens":0}}}
+{"type":"assistant","sessionId":"abc","requestId":"req_1","timestamp":"2026-10-01T17:19:01Z","message":{"id":"msg_1","model":"claude-sonnet-5-5","content":[{"type":"text"}],"usage":{"input_tokens":2,"output_tokens":438,"cache_creation_input_tokens":115430,"cache_read_input_tokens":0}}}
+`)
+
+	entries, err := CollectUsage(dir)
+	if err != nil {
+		t.Fatalf("CollectUsage: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (two lines of the same message.id/requestId are one API call)", len(entries))
+	}
+	if entries[0].CacheCreationInputTokens != 115430 || entries[0].OutputTokens != 438 {
+		t.Errorf("tokens = (%d cache-write, %d out), want (115430, 438): cache once, the largest streamed output",
+			entries[0].CacheCreationInputTokens, entries[0].OutputTokens)
+	}
+}
+
+func TestCollectUsage_KeepsLinesWithoutAMessageIDAsSeparateTurns(t *testing.T) {
+	dir := t.TempDir()
+	line := `{"type":"assistant","sessionId":"abc","timestamp":"2026-10-01T17:19:00Z","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":10,"output_tokens":5}}}` + "\n"
+	writeTranscript(t, dir, "session.jsonl", line+line)
+
+	entries, err := CollectUsage(dir)
+	if err != nil {
+		t.Fatalf("CollectUsage: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("len(entries) = %d, want 2: without an id there is nothing to prove they are the same call", len(entries))
+	}
+}

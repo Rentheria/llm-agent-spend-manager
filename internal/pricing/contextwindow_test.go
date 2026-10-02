@@ -78,6 +78,15 @@ func TestContextWindowOf_NoModelReportedIsItsOwnReason(t *testing.T) {
 	}
 }
 
+func TestContextWindowOf_KnowsTheFiveFiveModels(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5"} {
+		window := ContextWindowOf(model)
+		if !window.Known || window.Tokens != 1_000_000 {
+			t.Errorf("%s: window = %+v, want known 1,000,000 (Claude Code changelog)", model, window)
+		}
+	}
+}
+
 // TestContextWindowTable_MatchesObservedPeaks es el cruce que valida la tabla
 // contra los datos reales de esta máquina (2026-07-30): el contexto más grande
 // que un modelo llegó a cargar es un PISO duro de su ventana, así que una

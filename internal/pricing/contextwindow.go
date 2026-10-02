@@ -65,6 +65,12 @@ var contextWindowTable = map[string]contextWindowEntry{
 	"claude-opus-5": {1_000_000, sourceClaudeChangelog},
 	// Catalog: 1000000. Changelog: "a native 1M-token context window".
 	"claude-sonnet-5": {1_000_000, sourceBothSources},
+	// Not in the catalog. Changelog: "Added Claude Opus 5.5 (`claude-opus-5-5`),
+	// now the default Opus model — 1M context".
+	"claude-opus-5-5": {1_000_000, sourceClaudeChangelog},
+	// Not in the catalog. Changelog: "Added Claude Sonnet 5.5 (`claude-sonnet-5-5`),
+	// now the default Sonnet model on the Anthropic API — 1M context".
+	"claude-sonnet-5-5": {1_000_000, sourceClaudeChangelog},
 	// Catalog: 1000000. Changelog: "Fable 5 includes 1M context by default".
 	"claude-fable-5": {1_000_000, sourceBothSources},
 	// Catalog: 200000, for both the bare id and the dated snapshot.

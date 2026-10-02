@@ -129,3 +129,54 @@ func TestContextRates_TreatsALocalModelAsCostingNothingToCarry(t *testing.T) {
 		t.Errorf("rates = (%v, %v), want zeros: a local model has no per-token charge", read, write)
 	}
 }
+
+// A8 (E-05): the 5.5 models reported by Claude Code had no entry, so every turn
+// on them was unpriced and the report's totals were a floor. 1M tokens per
+// bucket makes each expected value the published $/MTok itself.
+func TestEstimateByBucket_PricesTheFiveFiveModelsPerPublishedRates(t *testing.T) {
+	tests := []struct {
+		model                                string
+		input, output, cacheWrite, cacheRead float64
+	}{
+		{"claude-sonnet-5-5", 2.00, 10.00, 2.50, 0.20},
+		// Opus 5.5 reads cache at 0.05x input, not the usual 0.1x.
+		{"claude-opus-5-5", 4.00, 20.00, 5.00, 0.20},
+	}
+	for _, tc := range tests {
+		for bucket, want := range map[string]float64{
+			"input": tc.input, "output": tc.output, "cacheWrite": tc.cacheWrite, "cacheRead": tc.cacheRead,
+		} {
+			var tokens TokenCounts
+			switch bucket {
+			case "input":
+				tokens.Input = 1_000_000
+			case "output":
+				tokens.Output = 1_000_000
+			case "cacheWrite":
+				tokens.CacheWrite = 1_000_000
+			case "cacheRead":
+				tokens.CacheRead = 1_000_000
+			}
+			costs, known := EstimateByBucket(tc.model, tokens)
+			if !known {
+				t.Fatalf("%s: known = false, want true", tc.model)
+			}
+			if got := costs.Input + costs.Output + costs.CacheWrite + costs.CacheRead; math.Abs(got-want) > 1e-9 {
+				t.Errorf("%s %s: cost = %v, want %v", tc.model, bucket, got, want)
+			}
+		}
+	}
+}
+
+// Sonnet 5's introductory $2/$10 was announced to end 2026-08-31 and was made
+// permanent instead (pricing page, verified 2026-10-02: the $3/$15 increase will
+// not occur). This pins the live rate so a "fix" back to $3/$15 has to fight a test.
+func TestEstimateUSD_SonnetFiveStaysAtTwoTenAfterTheIntroPeriod(t *testing.T) {
+	cost, known := EstimateUSD("claude-sonnet-5", 1_000_000, 1_000_000, 0, 0)
+	if !known {
+		t.Fatal("known = false, want true")
+	}
+	if want := 12.0; math.Abs(cost-want) > 1e-9 {
+		t.Errorf("cost = %v, want %v ($2 in + $10 out)", cost, want)
+	}
+}

@@ -24,9 +24,8 @@ import "regexp"
 // per-million list rates. Sources, cited per entry below:
 // https://platform.claude.com/docs/en/about-claude/pricing (Anthropic, verified
 // 2026-07-26) and https://ai.google.dev/gemini-api/docs/pricing (Google,
-// verified 2026-08-06). Vendors change these over time (e.g. Sonnet 5's
-// introductory rate ends 2026-08-31) — this table needs manual review whenever a
-// model's price changes or a new model ships. An unknown model yields
+// verified 2026-08-06). Vendors change these over time — this table needs manual
+// review whenever a model's price changes or a new model ships. An unknown model yields
 // known=false rather than a guessed price.
 type modelRate struct {
 	inputPerToken      float64
@@ -77,8 +76,34 @@ var pricingTable = map[string]modelRate{
 		cacheReadPerToken:  0.50 / perMillion,
 		outputPerToken:     25.00 / perMillion,
 	},
+	// Added 2026-10-02 (A8): Opus 5.5 reports `claude-opus-5-5`, and without an
+	// entry every turn on it stayed unpriced (E-05). Rates are the published
+	// ones ($4 in / $20 out per million) from the pricing page above, verified
+	// 2026-10-02. Cache reads are 0.05x input ($0.20), not the usual 0.1x — the
+	// page's footnote says so for this model — and the Claude Code changelog
+	// agrees ("$4/$20 per Mtok with $0.20/Mtok cache reads").
+	"claude-opus-5-5": {
+		inputPerToken:      4.00 / perMillion,
+		cacheWrite5mPerTok: 5.00 / perMillion,
+		cacheWrite1hPerTok: 8.00 / perMillion,
+		cacheReadPerToken:  0.20 / perMillion,
+		outputPerToken:     20.00 / perMillion,
+	},
+	// Added 2026-10-02 (A8): same gap as opus-5-5, on the model that is now the
+	// default Sonnet. Published rates ($2 in / $10 out per million), verified
+	// 2026-10-02 against the pricing page above. Its own entry rather than a
+	// "strip the last -N" alias, which would flatten models that can differ.
+	"claude-sonnet-5-5": {
+		inputPerToken:      2.00 / perMillion,
+		cacheWrite5mPerTok: 2.50 / perMillion,
+		cacheWrite1hPerTok: 4.00 / perMillion,
+		cacheReadPerToken:  0.20 / perMillion,
+		outputPerToken:     10.00 / perMillion,
+	},
 	"claude-sonnet-5": {
-		// Introductory pricing through 2026-08-31; becomes $3/$15 after.
+		// $2/$10 is now the standard price: the pricing page (verified 2026-10-02)
+		// says the introductory rate announced through 2026-08-31 became permanent
+		// and the scheduled $3/$15 increase will not occur.
 		inputPerToken:      2.00 / perMillion,
 		cacheWrite5mPerTok: 2.50 / perMillion,
 		cacheWrite1hPerTok: 4.00 / perMillion,
